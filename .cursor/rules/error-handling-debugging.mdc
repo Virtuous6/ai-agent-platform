@@ -1,5 +1,87 @@
 ---
-description:
-globs:
+description: 
+globs: 
 alwaysApply: false
 ---
+---
+description: Error handling, debugging patterns, and troubleshooting guide for LLM platform issues
+alwaysApply: false
+---
+
+# LLM Error Handling & Debugging
+
+## LLM-Aware Error Messages
+
+Write error messages that help both LLMs and users understand what went wrong:
+
+```python
+# Bad
+raise ValueError("LLM failed")
+
+# Good - LLM-aware error messages
+raise ValueError(
+    f"OpenAI API failed for agent '{agent_type}' with model '{model}'. "
+    f"Token count: {token_count}, Cost: ${cost:.4f}. "
+    f"Fallback response activated. Available agents: {available_agents}"
+)
+```
+
+## LLM Testing Approach
+
+- Test both LLM-powered and fallback responses
+- **Mock OpenAI API** for unit tests to avoid costs
+- Integration tests with real LLM agents (budget controlled)
+- Test context compression and token optimization
+- Validate agent routing and escalation logic
+
+## LLM Debugging Guidelines
+
+When debugging LLM issues:
+
+1. Check **OpenAI API key** configuration
+2. Verify **token limits** and context size
+3. Review **agent routing logic** and confidence scores
+4. Monitor **cost usage** and daily limits
+5. Test **fallback mechanisms** when LLM unavailable
+6. Validate **context preparation** for LLM consumption
+7. **Verify package imports** - check all __init__.py files exist
+
+## Standard Import Organization
+
+```python
+# Standard library
+import os
+import json
+import time
+from typing import Dict, List, Any, Optional
+from enum import Enum
+
+# LLM and AI libraries
+from langchain_openai import ChatOpenAI
+from langchain_core.prompts import ChatPromptTemplate
+from langchain.schema import HumanMessage, SystemMessage
+
+# Third party
+import asyncio
+from supabase import create_client
+
+# Local
+from agent_orchestrator import LLMAgentOrchestrator
+from state.context_manager import LLMContextManager
+```
+
+## Graceful Fallback Pattern
+
+```python
+async def process_with_fallback(self, message: str, context: dict) -> dict:
+    """Process with LLM and graceful fallback."""
+    try:
+        # Attempt LLM processing
+        return await self.process_with_llm(message, context)
+    except OpenAIError as e:
+        logger.warning(f"LLM unavailable: {e}")
+        return await self._keyword_fallback(message, context)
+    except Exception as e:
+        logger.error(f"Unexpected error: {e}")
+        return self._safe_fallback_response()
+```

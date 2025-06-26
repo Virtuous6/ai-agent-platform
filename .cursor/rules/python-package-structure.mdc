@@ -1,5 +1,93 @@
 ---
-description:
-globs:
+description: 
+globs: 
 alwaysApply: false
 ---
+---
+description: Python package structure requirements and import patterns for the LLM platform
+alwaysApply: false
+---
+
+# Python Package Structure Requirements
+
+**CRITICAL**: This platform requires proper Python package structure. Follow these rules strictly:
+
+## __init__.py Files Are MANDATORY
+
+```python
+# Every directory that contains Python modules MUST have __init__.py
+# These files make directories recognizable as Python packages
+
+# Example structure:
+agents/
+├── __init__.py                 # ✅ Required
+├── general/
+│   ├── __init__.py             # ✅ Required  
+│   └── general_agent.py
+├── technical/
+│   ├── __init__.py             # ✅ Required
+│   └── technical_agent.py
+└── research/
+    ├── __init__.py             # ✅ Required
+    └── research_agent.py
+```
+
+## Package __init__.py Content Pattern
+
+```python
+# Each __init__.py should export its main components
+"""
+Package Description
+
+Brief description of what this package does in the LLM platform context.
+"""
+
+from .main_module import MainClass, main_function
+
+__all__ = ['MainClass', 'main_function']
+```
+
+## Directory Naming Rules
+- **Never use names that conflict with external libraries** (e.g., `supabase/`)
+- Use descriptive names: `database/`, `agents/`, `orchestrator/`
+- Avoid generic names like `lib/`, `utils/`, `core/`
+
+## Import Patterns
+
+```python
+# ✅ Correct import patterns
+from orchestrator import AgentOrchestrator, AgentType
+from agents import GeneralAgent, TechnicalAgent, ResearchAgent
+from database import SupabaseLogger
+
+# ❌ Avoid direct module imports that bypass __init__.py
+from orchestrator.agent_orchestrator import AgentOrchestrator
+from agents.general.general_agent import GeneralAgent
+```
+
+## Development Setup Requirements
+
+When creating startup scripts or development tools:
+
+```python
+# Always ensure current directory is in Python path
+import sys
+from pathlib import Path
+
+# Add project root to Python path
+project_root = str(Path(__file__).parent.absolute())
+if project_root not in sys.path:
+    sys.path.insert(0, project_root)
+
+# Now imports will work correctly
+from orchestrator import AgentOrchestrator
+```
+
+## Package Structure Validation
+
+Before committing code, verify:
+- [ ] All directories with .py files have __init__.py
+- [ ] All __init__.py files export their main components
+- [ ] No directory names conflict with external libraries
+- [ ] Import statements use package-level imports when possible
+- [ ] Startup scripts properly configure Python path
