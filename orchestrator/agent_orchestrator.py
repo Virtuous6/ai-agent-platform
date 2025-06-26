@@ -11,9 +11,12 @@ import asyncio
 import logging
 import re
 import os
+import uuid
+import weakref
 from typing import Dict, Any, Optional, List, TYPE_CHECKING
-from datetime import datetime
+from datetime import datetime, timedelta
 from enum import Enum
+from collections import defaultdict, OrderedDict
 
 # LLM imports for intent classification
 from langchain_openai import ChatOpenAI
@@ -40,15 +43,95 @@ class AgentType(Enum):
     TECHNICAL = "technical" 
     RESEARCH = "research"
 
+# Event Bus for agent communication
+class EventBus:
+    """Simple event bus for agent communication."""
+    
+    def __init__(self):
+        self.subscribers = defaultdict(list)
+        self.event_queue = asyncio.Queue(maxsize=10000)
+        self.handlers = {}
+        
+    async def publish(self, event_type: str, data: Dict, source: str = None):
+        """Publish event without knowing subscribers."""
+        event = {
+            "id": str(uuid.uuid4()),
+            "type": event_type,
+            "data": data,
+            "source": source,
+            "timestamp": datetime.utcnow()
+        }
+        
+        try:
+            await self.event_queue.put(event)
+            logger.debug(f"Published event: {event_type} from {source}")
+        except asyncio.QueueFull:
+            logger.warning(f"Event queue full, dropping event: {event_type}")
+        
+    async def subscribe(self, subscriber_id: str, event_types: List[str], handler=None):
+        """Subscribe to event types."""
+        for event_type in event_types:
+            self.subscribers[event_type].append(subscriber_id)
+            if handler:
+                self.handlers[f"{subscriber_id}:{event_type}"] = handler
+
+# Resource Budget Manager
+class ResourceBudget:
+    """Manages resource budgets to prevent runaway spawning."""
+    
+    def __init__(self):
+        self.max_agents = 1000  # Total agent configs
+        self.max_active = 50    # Active in memory
+        self.max_spawns_per_hour = 20
+        self.max_cost_per_hour = 10.0  # USD
+        
+        self.spawn_times = []
+        self.hourly_cost = 0.0
+        self.reset_hour = datetime.utcnow().hour
+        
+    def can_spawn_agent(self, estimated_cost: float = 0.1) -> tuple[bool, str]:
+        """Check if we can spawn a new agent."""
+        now = datetime.utcnow()
+        
+        # Reset hourly counters if new hour
+        if now.hour != self.reset_hour:
+            self.spawn_times = []
+            self.hourly_cost = 0.0
+            self.reset_hour = now.hour
+        
+        # Remove old spawn times (older than 1 hour)
+        hour_ago = now - timedelta(hours=1)
+        self.spawn_times = [t for t in self.spawn_times if t > hour_ago]
+        
+        # Check limits
+        if len(self.spawn_times) >= self.max_spawns_per_hour:
+            return False, f"Spawn limit reached: {self.max_spawns_per_hour}/hour"
+        
+        if self.hourly_cost + estimated_cost > self.max_cost_per_hour:
+            return False, f"Cost limit reached: ${self.hourly_cost:.2f}/{self.max_cost_per_hour}/hour"
+        
+        return True, "OK"
+    
+    def record_spawn(self, cost: float = 0.1):
+        """Record a successful spawn."""
+        self.spawn_times.append(datetime.utcnow())
+        self.hourly_cost += cost
+
 class AgentOrchestrator:
     """
     Central orchestrator that routes user requests to appropriate specialized agents.
     
-    Handles intent classification, agent selection, and response coordination.
+    Enhanced with self-improvement capabilities:
+    - Dynamic agent spawning
+    - Lazy loading system
+    - Resource budget management
+    - Event-based communication
+    - Automatic cleanup
     """
     
     def __init__(self, general_agent: Optional['GeneralAgent'] = None, 
-                 technical_agent: Optional[Any] = None, research_agent: Optional[Any] = None):
+                 technical_agent: Optional[Any] = None, research_agent: Optional[Any] = None,
+                 db_logger: Optional[Any] = None):
         """Initialize the orchestrator with routing rules and agent capabilities."""
         self.routing_rules = self._initialize_routing_rules()
         self.agent_capabilities = self._initialize_agent_capabilities()
@@ -58,6 +141,17 @@ class AgentOrchestrator:
         self.general_agent = general_agent
         self.technical_agent = technical_agent
         self.research_agent = research_agent
+        
+        # Self-improvement components
+        self.agent_registry = {}  # Store agent configurations without instances
+        self.active_agents = OrderedDict()  # LRU cache of active agents
+        self.resource_budget = ResourceBudget()
+        self.event_bus = EventBus()
+        self.db_logger = db_logger
+        
+        # Agent lifecycle tracking
+        self.agent_last_used = {}  # Track when agents were last used
+        self.cleanup_task = None
         
         # Initialize LLM for intelligent intent classification
         self.intent_llm = ChatOpenAI(
@@ -72,7 +166,286 @@ class AgentOrchestrator:
         self.intent_parser = JsonOutputParser(pydantic_object=IntentClassification)
         self.intent_chain = self.intent_prompt | self.intent_llm | self.intent_parser
         
-        logger.info("Agent Orchestrator initialized with LLM-based intent classification")
+        # Start cleanup task
+        self._start_cleanup_task()
+        
+        logger.info("Agent Orchestrator initialized with self-improvement capabilities")
+
+    async def spawn_specialist_agent(self, specialty: str, parent_context: Optional[Dict[str, Any]] = None,
+                                   temperature: float = 0.4, max_tokens: int = 500) -> str:
+        """
+        Create a new specialist agent dynamically based on specialty and context.
+        
+        Args:
+            specialty: The specialty area for the new agent
+            parent_context: Context from parent request that triggered spawning
+            temperature: LLM temperature for the agent
+            max_tokens: Max tokens for agent responses
+            
+        Returns:
+            Agent ID if successful, None if spawning failed
+        """
+        try:
+            # Check resource budget
+            can_spawn, reason = self.resource_budget.can_spawn_agent()
+            if not can_spawn:
+                logger.warning(f"Cannot spawn agent: {reason}")
+                return None
+            
+            # Generate unique agent ID
+            agent_id = f"{specialty.lower().replace(' ', '_')}_{uuid.uuid4().hex[:8]}"
+            
+            # Create specialized system prompt
+            base_prompt = """You are a highly specialized AI assistant with deep expertise in {specialty}.
+
+Your role:
+- Provide expert-level assistance in {specialty}
+- Offer detailed, accurate, and practical solutions
+- Share best practices and industry standards
+- Explain complex concepts clearly
+- Suggest optimizations and improvements
+
+Always be:
+- Precise and technically accurate
+- Helpful and solution-oriented
+- Clear in your explanations
+- Proactive in suggesting improvements"""
+
+            system_prompt = base_prompt.format(specialty=specialty)
+            
+            # Add context from parent if available
+            if parent_context:
+                context_info = f"\n\nContext: This agent was created to handle {specialty} requests. "
+                if "user_pattern" in parent_context:
+                    context_info += f"User often asks about: {parent_context['user_pattern']}"
+                system_prompt += context_info
+            
+            # Store agent configuration (not instance)
+            agent_config = {
+                "agent_id": agent_id,
+                "specialty": specialty,
+                "system_prompt": system_prompt,
+                "temperature": temperature,
+                "max_tokens": max_tokens,
+                "created": datetime.utcnow(),
+                "last_used": datetime.utcnow(),
+                "usage_count": 0,
+                "parent_context": parent_context or {},
+                "model": "gpt-3.5-turbo-0125"
+            }
+            
+            # Check if we're at max capacity
+            if len(self.agent_registry) >= self.resource_budget.max_agents:
+                # Remove oldest unused agent
+                oldest_agent = min(self.agent_registry.items(), 
+                                 key=lambda x: x[1]["last_used"])
+                del self.agent_registry[oldest_agent[0]]
+                logger.info(f"Removed oldest agent {oldest_agent[0]} to make room")
+            
+            # Store in registry
+            self.agent_registry[agent_id] = agent_config
+            
+            # Log the spawn event
+            if self.db_logger:
+                await self.db_logger.log_event("agent_spawned", {
+                    "agent_id": agent_id,
+                    "specialty": specialty,
+                    "parent_context": parent_context
+                })
+            
+            # Publish spawn event
+            await self.event_bus.publish("agent_spawned", {
+                "agent_id": agent_id,
+                "specialty": specialty,
+                "timestamp": datetime.utcnow().isoformat()
+            }, source="orchestrator")
+            
+            # Record spawn in budget
+            self.resource_budget.record_spawn()
+            
+            logger.info(f"Spawned specialist agent: {agent_id} for {specialty}")
+            return agent_id
+            
+        except Exception as e:
+            logger.error(f"Error spawning specialist agent: {str(e)}")
+            return None
+    
+    async def get_or_load_agent(self, agent_id: str) -> Optional[Any]:
+        """
+        Get agent from active cache or load from registry with lazy loading.
+        
+        Args:
+            agent_id: The agent ID to load
+            
+        Returns:
+            Agent instance if successful, None otherwise
+        """
+        try:
+            # Check if already active
+            if agent_id in self.active_agents:
+                # Move to end (most recently used)
+                agent = self.active_agents.pop(agent_id)
+                self.active_agents[agent_id] = agent
+                self.agent_last_used[agent_id] = datetime.utcnow()
+                return agent
+            
+            # Check if agent exists in registry
+            if agent_id not in self.agent_registry:
+                logger.warning(f"Agent {agent_id} not found in registry")
+                return None
+            
+            # Load agent from configuration
+            config = self.agent_registry[agent_id]
+            
+            # Create agent instance using universal pattern
+            from langchain_openai import ChatOpenAI
+            
+            agent_llm = ChatOpenAI(
+                model=config["model"],
+                temperature=config["temperature"],
+                max_tokens=config["max_tokens"],
+                openai_api_key=os.getenv("OPENAI_API_KEY")
+            )
+            
+            # Create simple agent wrapper
+            class SpecialistAgent:
+                def __init__(self, agent_id, config, llm):
+                    self.agent_id = agent_id
+                    self.specialty = config["specialty"]
+                    self.system_prompt = config["system_prompt"]
+                    self.llm = llm
+                    self.usage_count = config["usage_count"]
+                
+                async def process_message(self, message: str, context: Dict[str, Any]) -> Dict[str, Any]:
+                    """Process message with specialist knowledge."""
+                    try:
+                        prompt = ChatPromptTemplate.from_messages([
+                            ("system", self.system_prompt),
+                            ("human", message)
+                        ])
+                        
+                        chain = prompt | self.llm
+                        response = await chain.ainvoke({"message": message})
+                        
+                        self.usage_count += 1
+                        
+                        return {
+                            "response": response.content,
+                            "agent_id": self.agent_id,
+                            "specialty": self.specialty,
+                            "tokens_used": response.response_metadata.get("token_usage", {}).get("total_tokens", 0),
+                            "metadata": {
+                                "model_used": self.llm.model_name,
+                                "usage_count": self.usage_count
+                            }
+                        }
+                    except Exception as e:
+                        logger.error(f"Error in specialist agent {self.agent_id}: {str(e)}")
+                        return {
+                            "response": f"I encountered an error processing your {self.specialty} request. Please try again.",
+                            "error": str(e),
+                            "agent_id": self.agent_id
+                        }
+                
+                async def close(self):
+                    """Cleanup agent resources."""
+                    pass
+            
+            # Create agent instance
+            agent = SpecialistAgent(agent_id, config, agent_llm)
+            
+            # Manage active agent cache
+            if len(self.active_agents) >= self.resource_budget.max_active:
+                # Remove least recently used agent
+                oldest_id, oldest_agent = self.active_agents.popitem(last=False)
+                await oldest_agent.close()
+                logger.debug(f"Unloaded agent {oldest_id} from memory")
+            
+            # Add to active cache
+            self.active_agents[agent_id] = agent
+            self.agent_last_used[agent_id] = datetime.utcnow()
+            
+            # Update usage in registry
+            self.agent_registry[agent_id]["last_used"] = datetime.utcnow()
+            self.agent_registry[agent_id]["usage_count"] += 1
+            
+            logger.debug(f"Loaded specialist agent: {agent_id}")
+            return agent
+            
+        except Exception as e:
+            logger.error(f"Error loading agent {agent_id}: {str(e)}")
+            return None
+    
+    async def cleanup_inactive_agents(self):
+        """Remove agents inactive for more than 24 hours."""
+        try:
+            cutoff_time = datetime.utcnow() - timedelta(hours=24)
+            agents_to_remove = []
+            
+            for agent_id, config in self.agent_registry.items():
+                if config["last_used"] < cutoff_time and config["usage_count"] < 5:
+                    agents_to_remove.append(agent_id)
+            
+            for agent_id in agents_to_remove:
+                # Remove from active cache if present
+                if agent_id in self.active_agents:
+                    agent = self.active_agents.pop(agent_id)
+                    await agent.close()
+                
+                # Remove from registry
+                del self.agent_registry[agent_id]
+                
+                # Remove from tracking
+                if agent_id in self.agent_last_used:
+                    del self.agent_last_used[agent_id]
+                
+                logger.info(f"Cleaned up inactive agent: {agent_id}")
+            
+            if agents_to_remove:
+                await self.event_bus.publish("agents_cleaned", {
+                    "removed_count": len(agents_to_remove),
+                    "timestamp": datetime.utcnow().isoformat()
+                }, source="orchestrator")
+            
+        except Exception as e:
+            logger.error(f"Error in agent cleanup: {str(e)}")
+    
+    def _start_cleanup_task(self):
+        """Start the background cleanup task."""
+        async def cleanup_loop():
+            while True:
+                try:
+                    await asyncio.sleep(3600)  # Run every hour
+                    await self.cleanup_inactive_agents()
+                except asyncio.CancelledError:
+                    break
+                except Exception as e:
+                    logger.error(f"Error in cleanup loop: {str(e)}")
+        
+        self.cleanup_task = asyncio.create_task(cleanup_loop())
+    
+    def get_agent_stats(self) -> Dict[str, Any]:
+        """Get statistics about agent spawning and usage."""
+        return {
+            "total_agents": len(self.agent_registry),
+            "active_agents": len(self.active_agents),
+            "max_capacity": self.resource_budget.max_agents,
+            "spawns_this_hour": len(self.resource_budget.spawn_times),
+            "hourly_cost": self.resource_budget.hourly_cost,
+            "recent_spawns": [
+                {
+                    "agent_id": aid,
+                    "specialty": config["specialty"],
+                    "usage_count": config["usage_count"],
+                    "created": config["created"].isoformat()
+                }
+                for aid, config in sorted(
+                    self.agent_registry.items(),
+                    key=lambda x: x[1]["created"],
+                    reverse=True
+                )[:10]
+            ]
+        }
     
     def _initialize_routing_rules(self) -> Dict[AgentType, Dict[str, Any]]:
         """
@@ -641,6 +1014,23 @@ Respond with JSON only.
         """
         try:
             logger.info("Closing Agent Orchestrator...")
+            
+            # Cancel cleanup task
+            if self.cleanup_task and not self.cleanup_task.done():
+                self.cleanup_task.cancel()
+                try:
+                    await self.cleanup_task
+                except asyncio.CancelledError:
+                    pass
+                logger.info("Cancelled cleanup task")
+            
+            # Close all active specialist agents
+            for agent_id, agent in self.active_agents.items():
+                try:
+                    await agent.close()
+                    logger.debug(f"Closed specialist agent: {agent_id}")
+                except Exception as e:
+                    logger.warning(f"Error closing specialist agent {agent_id}: {e}")
             
             # Close LangGraph workflow engine if available
             if hasattr(self, '_workflow_engine'):

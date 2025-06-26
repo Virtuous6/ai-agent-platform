@@ -841,6 +841,46 @@ class SupabaseLogger:
         
         return input_cost + output_cost
 
+    async def log_event(self, event_type: str, event_data: Dict[str, Any], 
+                       user_id: Optional[str] = None) -> bool:
+        """
+        Log a system event for tracking and analytics.
+        
+        Args:
+            event_type: Type of event (e.g., 'agent_spawned', 'pattern_found')
+            event_data: Event data dictionary
+            user_id: Optional user ID associated with the event
+            
+        Returns:
+            True if logged successfully, False otherwise
+        """
+        try:
+            event_record = {
+                "event_type": event_type,
+                "event_data": event_data,
+                "user_id": user_id,
+                "timestamp": datetime.now(timezone.utc).isoformat(),
+                "created_at": datetime.now(timezone.utc).isoformat()
+            }
+            
+            # For now, we'll use the messages table to store events
+            # In a full implementation, you'd want a dedicated events table
+            result = self.client.table("messages").insert({
+                "user_id": user_id or "system",
+                "content": f"System Event: {event_type}",
+                "message_type": "system",
+                "agent_response": event_record
+            }).execute()
+            
+            if result.data:
+                logger.debug(f"Logged event: {event_type}")
+                return True
+            
+        except Exception as e:
+            logger.error(f"Error logging event {event_type}: {str(e)}")
+        
+        return False
+
     async def close(self):
         """
         Close the Supabase client and cleanup resources.
