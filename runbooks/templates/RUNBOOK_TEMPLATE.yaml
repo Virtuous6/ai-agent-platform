@@ -1,0 +1,93 @@
+metadata:
+  name: "template-runbook"
+  version: "1.0.0"
+  description: "Template runbook for creating new workflows"
+  author: "AI Agent Platform"
+  created_date: "2024-01-01"
+  llm_context: |
+    This is a template runbook that serves as a starting point for creating
+    new workflows in the AI Agent Platform. Replace this template content
+    with your specific workflow logic.
+
+# Define when this runbook should be executed
+triggers:
+  - condition: "message_contains"
+    parameters:
+      keywords: ["example", "template"]
+    priority: 1
+  - condition: "agent_mention"
+    parameters:
+      agent: "general"
+    priority: 2
+
+# Define the workflow steps
+steps:
+  - id: "validate_input"
+    action: "validate_message"
+    description: "Validate user input and extract parameters"
+    parameters:
+      required_fields: []
+      optional_fields: []
+    error_handling:
+      action: "return_error"
+      message: "Invalid input provided"
+    
+  - id: "process_request"
+    action: "custom_logic"
+    description: "Main processing logic for this workflow"
+    parameters:
+      # Add your specific parameters here
+    error_handling:
+      action: "retry"
+      max_attempts: 3
+      backoff_strategy: "exponential"
+    
+  - id: "format_response"
+    action: "format_output"
+    description: "Format the response for user display"
+    parameters:
+      format_type: "markdown"
+      include_metadata: false
+    error_handling:
+      action: "use_fallback"
+      fallback_message: "Response formatting failed, but process completed"
+
+# Define possible outputs
+outputs:
+  success:
+    message: "Workflow completed successfully"
+    include_details: true
+    log_level: "info"
+  
+  failure:
+    message: "Workflow failed to complete"
+    include_error: true
+    log_level: "error"
+  
+  partial_success:
+    message: "Workflow completed with warnings"
+    include_warnings: true
+    log_level: "warning"
+
+# Configuration for this runbook
+configuration:
+  timeout_seconds: 30
+  max_retries: 3
+  log_execution: true
+  cache_results: false
+  
+# Analytics and monitoring
+analytics:
+  track_usage: true
+  track_performance: true
+  track_errors: true
+  custom_metrics:
+    - "user_satisfaction"
+    - "processing_time"
+
+# Version history and changelog
+changelog:
+  - version: "1.0.0"
+    date: "2024-01-01"
+    changes: "Initial template creation"
+    author: "AI Agent Platform" 

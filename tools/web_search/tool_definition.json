@@ -1,0 +1,222 @@
+{
+  "name": "web_search",
+  "description": "Intelligent web search tool with dual-engine routing for optimal results. Routes queries to Lobstr.io for general research or SERP API for structured data based on query type.",
+  "inputSchema": {
+    "type": "object",
+    "properties": {
+      "query": {
+        "type": "string",
+        "description": "The search query to execute",
+        "minLength": 1,
+        "maxLength": 500
+      },
+      "max_results": {
+        "type": "integer",
+        "description": "Maximum number of search results to return",
+        "minimum": 1,
+        "maximum": 50,
+        "default": 10
+      },
+      "search_type": {
+        "type": "string",
+        "description": "Force specific search type for routing",
+        "enum": [
+          "general",
+          "local", 
+          "product",
+          "map",
+          "snippet",
+          "FAQ",
+          "shopping",
+          "news",
+          "academic",
+          "research"
+        ]
+      },
+      "include_snippets": {
+        "type": "boolean",
+        "description": "Include content snippets in results",
+        "default": true
+      },
+      "location": {
+        "type": "string",
+        "description": "Geographic location for local searches (e.g., 'San Francisco, CA')",
+        "maxLength": 100
+      },
+      "language": {
+        "type": "string",
+        "description": "Language preference for search results (ISO 639-1 code)",
+        "pattern": "^[a-z]{2}$",
+        "default": "en"
+      },
+      "safe_search": {
+        "type": "boolean", 
+        "description": "Enable safe search filtering",
+        "default": true
+      }
+    },
+    "required": ["query"],
+    "additionalProperties": false
+  },
+  "outputSchema": {
+    "type": "object",
+    "properties": {
+      "results": {
+        "type": "array",
+        "description": "Array of search results",
+        "items": {
+          "type": "object",
+          "properties": {
+            "title": {
+              "type": "string",
+              "description": "Page title"
+            },
+            "url": {
+              "type": "string",
+              "format": "uri",
+              "description": "Page URL"
+            },
+            "snippet": {
+              "type": "string",
+              "description": "Content preview snippet"
+            },
+            "source": {
+              "type": "string",
+              "enum": ["lobstr", "serp"],
+              "description": "Search engine used"
+            },
+            "credibility_score": {
+              "type": "number",
+              "minimum": 0,
+              "maximum": 1,
+              "description": "Source credibility score (0-1)"
+            },
+            "metadata": {
+              "type": "object",
+              "properties": {
+                "domain": {
+                  "type": "string",
+                  "description": "Source domain"
+                },
+                "date_published": {
+                  "type": "string",
+                  "format": "date",
+                  "description": "Publication date if available"
+                },
+                "content_type": {
+                  "type": "string",
+                  "description": "Type of content (article, video, etc.)"
+                },
+                "author": {
+                  "type": "string",
+                  "description": "Content author if available"
+                }
+              }
+            }
+          },
+          "required": ["title", "url", "source"]
+        }
+      },
+      "search_metadata": {
+        "type": "object",
+        "description": "Search execution metadata",
+        "properties": {
+          "query_processed": {
+            "type": "string",
+            "description": "Processed/cleaned query"
+          },
+          "engine_used": {
+            "type": "string",
+            "enum": ["lobstr", "serp"],
+            "description": "Primary search engine used"
+          },
+          "routing_reason": {
+            "type": "string",
+            "description": "Reason for engine selection"
+          },
+          "total_results": {
+            "type": "integer",
+            "description": "Total results available"
+          },
+          "search_time_ms": {
+            "type": "number",
+            "description": "Search execution time in milliseconds"
+          },
+          "cache_hit": {
+            "type": "boolean",
+            "description": "Whether results came from cache"
+          }
+        },
+        "required": ["engine_used", "search_time_ms"]
+      },
+      "summary": {
+        "type": "string",
+        "description": "AI-generated summary of key findings from search results"
+      },
+      "related_queries": {
+        "type": "array",
+        "description": "Suggested related search queries",
+        "items": {
+          "type": "string"
+        }
+      }
+    },
+    "required": ["results", "search_metadata"]
+  },
+  "errorHandling": {
+    "retryStrategy": {
+      "maxRetries": 3,
+      "backoffMultiplier": 2,
+      "initialDelayMs": 1000
+    },
+    "fallbackBehavior": {
+      "onPrimaryFailure": "switch_to_secondary_engine",
+      "onRateLimit": "use_cache_or_queue",
+      "onNetworkError": "return_cached_results"
+    },
+    "errorTypes": [
+      {
+        "name": "SearchEngineError",
+        "description": "Engine-specific API failure",
+        "recoverable": true
+      },
+      {
+        "name": "RateLimitError", 
+        "description": "API quota exceeded",
+        "recoverable": true
+      },
+      {
+        "name": "InvalidQueryError",
+        "description": "Malformed search query",
+        "recoverable": false
+      },
+      {
+        "name": "NetworkError",
+        "description": "Connection timeout or failure",
+        "recoverable": true
+      }
+    ]
+  },
+  "capabilities": [
+    "intelligent_routing",
+    "dual_engine_support", 
+    "result_caching",
+    "content_summarization",
+    "credibility_scoring",
+    "query_classification",
+    "fallback_handling"
+  ],
+  "dependencies": [
+    "httpx",
+    "aiohttp", 
+    "beautifulsoup4",
+    "pydantic"
+  ],
+  "rateLimit": {
+    "requestsPerMinute": 100,
+    "burstLimit": 20
+  },
+  "version": "1.0.0",
+  "author": "AI Agent Platform",
+  "lastUpdated": "2024-06-26"
+} 

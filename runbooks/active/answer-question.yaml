@@ -1,0 +1,275 @@
+metadata:
+  name: "answer-question"
+  version: "1.0.0"
+  description: "Intelligent question answering workflow using general agent and web search"
+  author: "AI Agent Platform"
+  created_date: "2025-01-16"
+  llm_context: |
+    This runbook handles general question answering by first attempting to answer
+    with the general agent's knowledge base. If the agent indicates uncertainty
+    or the question requires current information, it supplements the response
+    with web search results for comprehensive, accurate answers.
+
+# Define when this runbook should be executed
+triggers:
+  - condition: "message_contains"
+    parameters:
+      keywords: ["what", "how", "why", "when", "where", "who", "?"]
+    priority: 3
+  - condition: "agent_mention"
+    parameters:
+      agent: "general"
+    priority: 2
+  - condition: "question_detected"
+    parameters:
+      confidence_threshold: 0.7
+    priority: 1
+
+# Define the workflow steps
+steps:
+  - id: "classify_question"
+    action: "analyze_message"
+    description: "Classify question type and determine if web search is needed"
+    parameters:
+      extract_fields:
+        - "question_type"
+        - "complexity_level" 
+        - "time_sensitivity"
+        - "domain_knowledge_required"
+      classification_patterns:
+        factual: ["what is", "define", "explain", "describe"]
+        procedural: ["how to", "how do", "steps", "process"]
+        current_events: ["latest", "recent", "current", "today", "now", "2024", "2025"]
+        local_info: ["near me", "in [location]", "local", "nearby"]
+        product_research: ["best", "price", "review", "compare", "vs"]
+    error_handling:
+      action: "continue"
+      message: "Classification failed, proceeding with general approach"
+    
+  - id: "attempt_direct_answer"
+    action: "invoke_agent"
+    description: "Try to answer using general agent's knowledge"
+    parameters:
+      agent: "general"
+      instructions: |
+        Answer the user's question directly if you have confident knowledge.
+        If you're uncertain, lack current information, or need to verify facts,
+        respond with: "NEEDS_WEB_SEARCH: [brief explanation of what info needed]"
+      include_confidence: true
+      max_tokens: 500
+    error_handling:
+      action: "continue_to_web_search"
+      message: "Direct answer failed, proceeding to web search"
+    
+  - id: "evaluate_response"
+    action: "check_response_quality"
+    description: "Determine if web search enhancement is needed"
+    parameters:
+      check_for_patterns:
+        - "NEEDS_WEB_SEARCH"
+        - "I don't know"
+        - "I'm not sure"
+        - "uncertain"
+        - "might be"
+        - "could be"
+      confidence_threshold: 0.8
+      completeness_threshold: 0.7
+    conditions:
+      needs_web_search:
+        - response_contains: "NEEDS_WEB_SEARCH"
+        - confidence_below: 0.8
+        - question_type: ["current_events", "local_info", "product_research"]
+    error_handling:
+      action: "default_to_web_search"
+      message: "Response evaluation failed, using web search"
+    
+  - id: "perform_web_search"
+    action: "invoke_tool"
+    description: "Search the web for additional context and current information"
+    parameters:
+      tool: "web_search"
+      query_construction:
+        base: "{{original_question}}"
+        enhancement_patterns:
+          factual: "{{question}} definition explanation"
+          procedural: "{{question}} tutorial guide steps"
+          current_events: "{{question}} latest news 2025"
+          local_info: "{{question}} {{user_location}}"
+          product_research: "{{question}} comparison review 2025"
+      search_parameters:
+        max_results: 5
+        include_snippets: true
+        safe_search: true
+        language: "en"
+    conditions:
+      execute_when:
+        - needs_web_search: true
+        - direct_answer_insufficient: true
+    error_handling:
+      action: "use_direct_answer"
+      message: "Web search failed, using available agent response"
+    
+  - id: "synthesize_answer"
+    action: "invoke_agent"
+    description: "Combine agent knowledge with web search results for comprehensive answer"
+    parameters:
+      agent: "general"
+      instructions: |
+        Create a comprehensive answer using:
+        1. Your knowledge base (if confident)
+        2. The web search results provided
+        3. Cite sources when using web information
+        Format as a helpful, accurate response.
+      context_sources:
+        - "direct_answer_result"
+        - "web_search_results"
+      citation_format: "markdown_links"
+      max_tokens: 800
+    conditions:
+      execute_when:
+        - web_search_completed: true
+        - has_search_results: true
+    error_handling:
+      action: "fallback_response"
+      message: "Answer synthesis failed"
+    
+  - id: "format_final_response"
+    action: "format_output"
+    description: "Format the final answer with proper structure and citations"
+    parameters:
+      format_type: "markdown"
+      structure:
+        - "## Answer"
+        - "{{main_answer}}"
+        - "{{additional_context}}"
+        - "### Sources"
+        - "{{source_citations}}"
+      include_metadata:
+        confidence_score: true
+        information_freshness: true
+        search_summary: true
+      footer_note: "💡 *This answer was enhanced with current web information*"
+    error_handling:
+      action: "simple_format"
+      fallback_message: "{{raw_answer}}"
+
+# Define possible outputs
+outputs:
+  success:
+    message: "Question answered successfully"
+    include_details: true
+    log_level: "info"
+    metrics:
+      - "response_time"
+      - "confidence_score"
+      - "sources_used"
+  
+  web_enhanced:
+    message: "Question answered with web search enhancement"
+    include_details: true
+    log_level: "info"
+    metrics:
+      - "response_time"
+      - "search_results_count"
+      - "synthesis_quality"
+  
+  partial_answer:
+    message: "Partial answer provided - some information may be incomplete"
+    include_warnings: true
+    log_level: "warning"
+    metrics:
+      - "completion_percentage"
+      - "confidence_score"
+  
+  failure:
+    message: "Unable to answer question adequately"
+    include_error: true
+    log_level: "error"
+    fallback_response: "I apologize, but I'm having trouble answering your question right now. Please try rephrasing or contact support."
+
+# Configuration for this runbook
+configuration:
+  timeout_seconds: 60
+  max_retries: 2
+  log_execution: true
+  cache_results: true
+  cache_ttl_seconds: 1800  # 30 minutes
+  
+# Advanced features
+features:
+  adaptive_routing:
+    enabled: true
+    confidence_learning: true
+    pattern_recognition: true
+  
+  quality_assurance:
+    fact_checking: true
+    source_verification: true
+    bias_detection: true
+  
+  personalization:
+    user_preference_learning: true
+    response_style_adaptation: true
+    domain_expertise_tracking: true
+
+# Analytics and monitoring
+analytics:
+  track_usage: true
+  track_performance: true
+  track_errors: true
+  track_user_satisfaction: true
+  custom_metrics:
+    - "question_complexity_distribution"
+    - "web_search_necessity_rate"
+    - "answer_accuracy_score"
+    - "response_completeness"
+    - "source_diversity"
+    - "user_follow_up_rate"
+
+# Performance optimization
+optimization:
+  parallel_processing:
+    agent_and_search: false  # Sequential for better context
+    multiple_searches: true
+  
+  caching_strategy:
+    cache_agent_responses: true
+    cache_search_results: true
+    cache_synthesized_answers: true
+  
+  resource_management:
+    max_concurrent_searches: 3
+    search_timeout: 30
+    agent_timeout: 20
+
+# Integration specifications
+integrations:
+  required_agents:
+    - name: "general"
+      version: ">=1.0.0"
+      capabilities: ["question_answering", "synthesis", "citation"]
+  
+  required_tools:
+    - name: "web_search"
+      version: ">=1.0.0"
+      capabilities: ["intelligent_routing", "result_processing", "credibility_scoring"]
+  
+  optional_tools:
+    - name: "fact_checker"
+      fallback_available: true
+    - name: "citation_formatter"
+      fallback_available: true
+
+# Version history and changelog
+changelog:
+  - version: "1.0.0"
+    date: "2025-01-16"
+    changes: "Initial Q&A runbook with web search integration"
+    author: "AI Agent Platform"
+    features:
+      - "Intelligent question classification"
+      - "Adaptive web search triggering"
+      - "Multi-source answer synthesis"
+      - "Comprehensive error handling"
+      - "Performance optimization"
+      - "Quality assurance measures" 
