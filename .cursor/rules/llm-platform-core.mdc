@@ -3,3 +3,52 @@ description:
 globs:
 alwaysApply: false
 ---
+---
+description: Core principles for LLM-Powered AI Agent Platform development
+alwaysApply: true
+---
+
+# LLM-Powered AI Agent Platform Core Principles
+
+## Project Context
+You are helping build an **LLM-Powered AI Agent Platform** that uses ChatGPT agents with specialized domain expertise, enhanced by runbook frameworks for consistent intelligence.
+
+## 🧠 LLM-First Principles
+
+### 1. LLM-Powered Intelligence
+- **All agents use ChatGPT** with specialized prompts and domain expertise
+- **Cost optimization is critical** - track tokens and monitor OpenAI API usage
+- **Context awareness** - LLM agents maintain conversation history and user preferences
+- **Graceful fallback** - keyword-based responses when LLM is unavailable
+
+### 2. LLM Documentation Standards
+- Every new file MUST have a corresponding README.llm.md in its directory
+- Update README.llm.md files to reflect LLM integration when modifying code
+- Write documentation assuming **ChatGPT agents** need to understand it
+- Include LLM configuration details (temperature, tokens, cost implications)
+
+### 3. Architecture Principles
+- **Async LLM Operations**: All ChatGPT calls must be async
+- **Token Tracking**: Log tokens used and cost for every LLM interaction
+- **Context Management**: Efficiently prepare conversation context for LLM agents
+- **Error Handling**: Graceful fallback when OpenAI API fails
+- **Temperature Tuning**: Use appropriate temperature per agent type
+
+## 💰 Cost Management
+```python
+# Always implement cost controls
+class LLMCostManager:
+    DAILY_COST_LIMIT = 25.00
+    TOKENS_PER_REQUEST_LIMIT = 1000
+    
+    async def check_cost_limits(self, user_id: str) -> bool:
+        daily_cost = await self._get_daily_cost(user_id)
+        return daily_cost < self.DAILY_COST_LIMIT
+```
+
+## 🚫 Forbidden Patterns
+- **No synchronous LLM calls** - Always use async for ChatGPT integration
+- **No untracked LLM usage** - Always monitor tokens and costs
+- **No hardcoded prompts** - Use structured prompt templates
+- **No context overflow** - Always check token limits before LLM calls
+- **No bare LLM exceptions** - Provide meaningful fallback responses

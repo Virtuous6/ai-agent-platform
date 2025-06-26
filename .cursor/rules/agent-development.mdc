@@ -3,3 +3,89 @@ description:
 globs:
 alwaysApply: false
 ---
+---
+description: Patterns and templates for creating LLM-powered ChatGPT agents
+globs: ["agents/**/*.py"]
+alwaysApply: false
+---
+
+# ChatGPT Agent Development Patterns
+
+## Agent Creation Template
+
+When creating any new LLM agent:
+
+```python
+# 1. Import LLM dependencies
+from langchain_openai import ChatOpenAI
+from langchain_core.prompts import ChatPromptTemplate
+
+# 2. Create agent class with LLM integration
+class NewAgent:
+    def __init__(self):
+        self.llm = ChatOpenAI(
+            model="gpt-3.5-turbo-0125",
+            temperature=0.4,  # Adjust per agent type
+            max_tokens=500
+        )
+        self.prompt = self._create_specialized_prompt()
+    
+    def _create_specialized_prompt(self):
+        return ChatPromptTemplate.from_messages([...])
+
+# 3. Create README.llm.md with LLM details
+# 4. Update agents/README.llm.md with new agent
+# 5. Add to orchestrator routing logic
+```
+
+## LLM Response Processing Pattern
+
+```python
+async def process_with_llm(self, message: str, context: dict) -> dict:
+    """Process message with ChatGPT integration."""
+    try:
+        # Prepare context for LLM
+        llm_context = self._prepare_llm_context(context)
+        
+        # Call ChatGPT with tracking
+        start_time = time.time()
+        response = await self.llm.agenerate([prompt])
+        processing_time = time.time() - start_time
+        
+        # Track usage and cost
+        await self._track_llm_usage(response, processing_time)
+        
+        return self._format_llm_response(response)
+    
+    except Exception as e:
+        logger.error(f"LLM processing failed: {e}")
+        return await self._fallback_response(message)
+```
+
+## Agent Response Structure
+
+Always structure LLM responses for consistency:
+
+```python
+async def process_llm_response(self, llm_response, context: dict) -> dict:
+    """Process and structure LLM agent response."""
+    return {
+        "response": llm_response.content,
+        "agent_type": self.agent_type,
+        "confidence": self._calculate_confidence(llm_response),
+        "metadata": {
+            "model": self.llm.model_name,
+            "tokens_used": llm_response.llm_output.get("token_usage", {}),
+            "cost": self._calculate_cost(llm_response),
+            "processing_time": context.get("processing_time"),
+            "domain_classification": self._classify_domain(llm_response)
+        },
+        "escalation_suggestion": self._assess_escalation_need(llm_response, context)
+    }
+```
+
+## Agent Types and Temperatures
+
+- **General Agent**: temp: 0.7, conversational
+- **Technical Agent**: temp: 0.3, precise  
+- **Research Agent**: temp: 0.4, analytical

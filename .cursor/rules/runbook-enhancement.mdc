@@ -3,3 +3,60 @@ description:
 globs:
 alwaysApply: false
 ---
+---
+description: Runbook enhancement patterns for LLM agent integration
+globs: ["runbooks/**/*.yaml", "runbooks/**/*.md"]
+alwaysApply: false
+---
+
+# Runbook Enhancement for LLM
+
+## LLM-Enhanced Runbook Principles
+
+- Runbooks **enhance LLM decision-making**, not replace it
+- YAML workflows provide structured guidance for ChatGPT agents
+- Code implements LLM integration, runbooks provide intelligence frameworks
+- Always suggest runbook enhancements for LLM agent improvement
+
+## Creating LLM-Enhanced Runbooks
+
+```bash
+# 1. Start from LLM-optimized template
+cp runbooks/templates/LLM_AGENT_TEMPLATE.yaml runbooks/active/{workflow-name}.yaml
+
+# 2. Include LLM guidance and decision frameworks
+# 3. Add agent_guidance sections for ChatGPT enhancement
+# 4. Test with actual LLM agents
+# 5. Document in runbooks/README.llm.md with LLM integration details
+```
+
+## Runbook Structure for LLM Agents
+
+```yaml
+# Enhanced runbook with LLM guidance
+name: "LLM Agent Workflow"
+description: "Workflow enhanced with ChatGPT decision support"
+
+agent_guidance:
+  llm_context: "Provide specialized context for ChatGPT agents"
+  decision_points: "Mark areas where LLM should provide analysis"
+  escalation_triggers: "Define when to escalate to human oversight"
+
+steps:
+  - name: "LLM Analysis"
+    type: "llm_enhanced"
+    agent_type: "technical"  # or general, research
+    temperature: 0.3
+    max_tokens: 500
+    
+  - name: "Human Review"
+    type: "manual"
+    trigger_conditions: ["high_cost", "low_confidence"]
+```
+
+## LLM Runbook Testing
+
+- Test with different agent types and contexts
+- Validate LLM decision frameworks
+- Ensure proper escalation to human oversight
+- Monitor cost implications of LLM-enhanced workflows

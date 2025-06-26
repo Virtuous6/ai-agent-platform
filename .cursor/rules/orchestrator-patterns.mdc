@@ -3,3 +3,79 @@ description:
 globs:
 alwaysApply: false
 ---
+---
+description: Agent orchestration and routing patterns for LLM platform
+globs: ["orchestrator/**/*.py"]
+alwaysApply: false
+---
+
+# Agent Orchestration Patterns
+
+## Multi-Agent LLM Routing
+
+```python
+class LLMAgentOrchestrator:
+    def __init__(self):
+        self.agents = {
+            "general": GeneralAgent(),      # temp: 0.7, conversational
+            "technical": TechnicalAgent(),  # temp: 0.3, precise
+            "research": ResearchAgent()     # temp: 0.4, analytical
+        }
+    
+    async def route_to_llm_agent(self, message: str, context: dict):
+        # Intelligent routing with confidence scoring
+        agent_scores = await self._classify_agent_intent(message)
+        selected_agent = self._select_best_agent(agent_scores)
+        
+        return await self.agents[selected_agent].process_message(message, context)
+```
+
+## LLM State Management
+
+- **Conversation Context**: Optimize context for LLM token efficiency
+- **User Profiling**: Track user expertise for LLM response adaptation  
+- **Agent Handoffs**: Preserve context across specialized LLM agents
+- **Cost Tracking**: Monitor per-user and per-conversation LLM costs
+
+## Context Keys for LLM Platform
+
+Format: `{scope}:{identifier}:{sub-identifier}`
+
+Examples:
+```
+llm:user:123:profile          # User LLM interaction profile
+llm:conversation:abc:context  # LLM conversation context
+llm:agent:general:performance # LLM agent performance metrics
+llm:cost:daily:tracking       # Daily LLM cost tracking
+llm:routing:confidence:scores # Agent routing confidence data
+```
+
+## LLM Context Optimization
+
+```python
+def _prepare_llm_context(self, conversation_context: dict) -> str:
+    """Prepare conversation context for LLM consumption."""
+    # Compress context if too large
+    if self._estimate_tokens(conversation_context) > 1500:
+        conversation_context = self._compress_context(conversation_context)
+    
+    # Format for LLM understanding
+    return self._format_context_for_llm(conversation_context)
+```
+
+## LLM Usage Tracking
+
+```python
+async def _track_llm_usage(self, response, processing_time: float):
+    """Track LLM usage for cost optimization."""
+    usage_data = {
+        "agent_type": self.agent_type,
+        "model": self.llm.model_name,
+        "tokens_used": response.llm_output.get("token_usage", {}),
+        "cost": self._calculate_cost(response),
+        "processing_time": processing_time,
+        "timestamp": datetime.utcnow()
+    }
+    
+    await self.analytics.log_llm_usage(usage_data)
+```

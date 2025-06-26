@@ -182,12 +182,18 @@ class AIAgentSlackBot:
             
             # Extract token usage from agent response
             tokens_used = orchestrator_result.get('tokens_used', 0)
+            input_tokens = orchestrator_result.get('input_tokens', 0)
+            output_tokens = orchestrator_result.get('output_tokens', 0)
             model_used = orchestrator_result.get('metadata', {}).get('model_used', 'unknown')
             
-            # Estimate input/output tokens if not provided separately
-            # For now, assume 70% input, 30% output (typical ChatGPT conversation pattern)
-            input_tokens = int(tokens_used * 0.7) if tokens_used else None
-            output_tokens = int(tokens_used * 0.3) if tokens_used else None
+            # If we only have total tokens, estimate input/output split
+            if tokens_used > 0 and input_tokens == 0 and output_tokens == 0:
+                input_tokens = int(tokens_used * 0.7)
+                output_tokens = int(tokens_used * 0.3)
+            
+            # Ensure we have valid values (None -> 0 for database)
+            input_tokens = input_tokens if input_tokens is not None else 0
+            output_tokens = output_tokens if output_tokens is not None else 0
             
             # Log the bot response with comprehensive metadata including token tracking
             await self._log_interaction(

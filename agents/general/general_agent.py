@@ -190,11 +190,15 @@ Analyze this message for escalation needs:"""
                 with get_openai_callback() as cb:
                     response = await self._generate_response(message, context, history_context, escalation_suggestion)
                 tokens_used = cb.total_tokens
+                input_tokens = cb.prompt_tokens
+                output_tokens = cb.completion_tokens
                 cost = cb.total_cost
             except Exception as e:
                 logger.warning(f"OpenAI callback failed, proceeding without tracking: {e}")
                 response = await self._generate_response(message, context, history_context, escalation_suggestion)
                 tokens_used = 0
+                input_tokens = 0
+                output_tokens = 0
                 cost = 0.0
             
             # Log the interaction
@@ -205,6 +209,8 @@ Analyze this message for escalation needs:"""
                 "user_id": context.get("user_id"),
                 "channel_id": context.get("channel_id"),
                 "tokens_used": tokens_used,
+                "input_tokens": input_tokens,
+                "output_tokens": output_tokens,
                 "cost": cost
             }
             self.conversation_history.append(interaction_log)
@@ -215,6 +221,8 @@ Analyze this message for escalation needs:"""
                 "conversation_type": "general",  # LLM determined this
                 "confidence": 0.8,  # General agent confidence
                 "tokens_used": tokens_used,
+                "input_tokens": input_tokens,
+                "output_tokens": output_tokens,
                 "processing_cost": cost,
                 "metadata": {
                     "model_used": self.llm.model_name,

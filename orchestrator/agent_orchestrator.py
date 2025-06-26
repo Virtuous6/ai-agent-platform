@@ -391,8 +391,31 @@ Respond with JSON only.
         """
         agent_info = self.agent_capabilities[agent_type]
         
-        # For now, generate a simple response until actual agents are implemented
-        response = await self._generate_agent_response(agent_type, message, context, confidence, error)
+        # Get agent response with token tracking
+        agent_response = await self._generate_agent_response(agent_type, message, context, confidence, error)
+        
+        # Extract token information from agent response if available
+        tokens_used = 0
+        input_tokens = 0
+        output_tokens = 0
+        model_used = "unknown"
+        processing_cost = 0.0
+        
+        if isinstance(agent_response, dict):
+            response_text = agent_response.get("response", agent_response)
+            tokens_used = agent_response.get("tokens_used", 0)
+            input_tokens = agent_response.get("input_tokens", 0)
+            output_tokens = agent_response.get("output_tokens", 0)
+            model_used = agent_response.get("metadata", {}).get("model_used", "unknown")
+            processing_cost = agent_response.get("processing_cost", 0.0)
+            
+            # If we have total tokens but not input/output split, estimate
+            if tokens_used > 0 and input_tokens == 0 and output_tokens == 0:
+                # Estimate based on typical conversation patterns
+                input_tokens = int(tokens_used * 0.7)
+                output_tokens = int(tokens_used * 0.3)
+        else:
+            response_text = str(agent_response)
         
         # Log the routing decision
         routing_log = {
@@ -401,7 +424,8 @@ Respond with JSON only.
             "confidence": confidence,
             "message_preview": message[:100],
             "user_id": context.get("user_id"),
-            "channel_id": context.get("channel_id")
+            "channel_id": context.get("channel_id"),
+            "tokens_used": tokens_used
         }
         self.request_history.append(routing_log)
         
@@ -409,10 +433,15 @@ Respond with JSON only.
             "agent_type": agent_type.value,
             "agent_name": agent_info["name"],
             "confidence": confidence,
-            "response": response,
+            "response": response_text,
+            "tokens_used": tokens_used,
+            "input_tokens": input_tokens,
+            "output_tokens": output_tokens,
+            "processing_cost": processing_cost,
             "metadata": {
                 "routing_time": datetime.utcnow().isoformat(),
                 "specialties": agent_info["specialties"],
+                "model_used": model_used,
                 "error": error
             }
         }
@@ -443,7 +472,7 @@ Respond with JSON only.
             if self.technical_agent:
                 try:
                     agent_response = await self.technical_agent.process_message(message, context)
-                    return agent_response["response"]
+                    return agent_response  # Return full response dict with token data
                 except Exception as e:
                     logger.error(f"Error calling Technical Agent: {str(e)}")
                     # Fallback to placeholder response
@@ -455,7 +484,7 @@ Respond with JSON only.
             if self.research_agent:
                 try:
                     agent_response = await self.research_agent.process_message(message, context)
-                    return agent_response["response"]
+                    return agent_response  # Return full response dict with token data
                 except Exception as e:
                     logger.error(f"Error calling Research Agent: {str(e)}")
                     # Fallback to placeholder response
@@ -467,7 +496,7 @@ Respond with JSON only.
             if self.general_agent:
                 try:
                     agent_response = await self.general_agent.process_message(message, context)
-                    return agent_response["response"]
+                    return agent_response  # Return full response dict with token data
                 except Exception as e:
                     logger.error(f"Error calling General Agent: {str(e)}")
                     # Fallback to placeholder response
