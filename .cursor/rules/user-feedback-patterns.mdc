@@ -1,0 +1,119 @@
+---
+description:
+globs:
+alwaysApply: false
+---
+# User Feedback Integration Patterns
+
+## Slash Command Implementation
+
+```python
+# Always implement feedback commands
+@app.command("/improve")
+async def improve_workflow(ack, command):
+    await ack()
+    
+    # Get user's last workflow
+    last_run = await get_last_user_run(command["user_id"])
+    
+    if not last_run:
+        return await respond("No recent workflow to improve")
+    
+    # Extract improvement suggestion
+    improvement = command["text"] or "Make it better"
+    
+    # Store feedback
+    feedback_id = await store_feedback({
+        "run_id": last_run["run_id"],
+        "user_id": command["user_id"],
+        "improvement": improvement,
+        "timestamp": datetime.utcnow()
+    })
+    
+    # Apply improvement
+    result = await apply_improvement(feedback_id)
+    
+    return await respond(f"✨ Thanks! I'll {improvement}. {result}")
+
+@app.command("/workflow")
+async def workflow_management(ack, command):
+    await ack()
+    
+    subcommands = {
+        "save": save_workflow,
+        "list": list_workflows,
+        "show": show_workflow,
+        "improve": improve_workflow,
+        "delete": delete_workflow
+    }
+    
+    parts = command["text"].split(" ", 1)
+    subcommand = parts[0] if parts else "list"
+    args = parts[1] if len(parts) > 1 else ""
+    
+    handler = subcommands.get(subcommand, list_workflows)
+    return await handler(command["user_id"], args)
+```
+
+## Feedback Processing
+
+```python
+class FeedbackProcessor:
+    async def process_feedback(self, feedback: Dict) -> Dict:
+        """Turn user feedback into system improvements."""
+        
+        # Analyze feedback intent
+        intent = await self._analyze_feedback_intent(feedback)
+        
+        # Generate improvement
+        improvement = await self._generate_improvement(
+            feedback["run_id"],
+            intent,
+            feedback["improvement"]
+        )
+        
+        # Test improvement
+        if await self._test_improvement(improvement):
+            # Apply to system
+            await self._apply_improvement(improvement)
+            
+            return {
+                "status": "applied",
+                "improvement": improvement,
+                "impact": await self._estimate_impact(improvement)
+            }
+        
+        return {
+            "status": "pending_review",
+            "reason": "Needs testing"
+        }
+```
+
+## Workflow Versioning
+
+```python
+class WorkflowVersionControl:
+    async def save_workflow_version(self, workflow_id: str, 
+                                   changes: Dict, 
+                                   source: str = "user"):
+        """Version control for workflows."""
+        
+        current = await self.get_current_version(workflow_id)
+        
+        new_version = {
+            "workflow_id": workflow_id,
+            "version": current["version"] + 1,
+            "changes": changes,
+            "source": source,  # "user", "system", "automated"
+            "parent_version": current["version"],
+            "created_at": datetime.utcnow()
+        }
+        
+        # Save version
+        await self.db.save_version(new_version)
+        
+        # Update current
+        await self.set_current_version(workflow_id, new_version)
+        
+        return new_version
+```

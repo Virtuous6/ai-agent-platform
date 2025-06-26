@@ -1,0 +1,83 @@
+---
+description:
+globs:
+alwaysApply: false
+---
+# MVP Development Patterns
+
+## Start Simple, Iterate Fast
+
+```python
+# MVP Pattern: Basic but extensible
+class MVPWorkflowAnalyst:
+    """Minimal viable workflow analyst."""
+    
+    async def analyze_run(self, run_id: str) -> Dict:
+        # MVP: Just track success and duration
+        run_data = await self.db.get_run(run_id)
+        
+        analysis = {
+            "run_id": run_id,
+            "success": run_data["status"] == "completed",
+            "duration": (run_data["end_time"] - run_data["start_time"]).seconds
+        }
+        
+        # MVP: Simple pattern extraction
+        if analysis["success"] and analysis["duration"] < 10:
+            pattern = {
+                "trigger": run_data["message"][:50],
+                "fast": True,
+                "reusable": True
+            }
+            await self.save_pattern(pattern)
+        
+        return analysis
+
+# Can enhance later without changing interface
+```
+
+## Incremental Enhancement
+
+```python
+# Phase 1: Track
+async def track_workflow(run_id: str, data: Dict):
+    await db.save_run(run_id, data)
+
+# Phase 2: Analyze
+async def analyze_workflow(run_id: str):
+    data = await db.get_run(run_id)
+    if data["success"]:
+        await extract_pattern(data)
+
+# Phase 3: Improve
+async def improve_workflow(pattern: Dict):
+    automation = await create_automation(pattern)
+    await apply_automation(automation)
+
+# Phase 4: Self-improve
+async def self_improve():
+    patterns = await find_all_patterns()
+    for pattern in patterns:
+        if pattern.frequency > 5:
+            await improve_workflow(pattern)
+```
+
+## Testing Patterns
+
+```python
+# Test self-improvement in isolation
+@pytest.mark.asyncio
+async def test_self_improvement_cycle():
+    # Execute workflow
+    run_id = await execute_test_workflow()
+    
+    # Analyze it
+    analysis = await analyst.analyze_run(run_id)
+    
+    # Verify learning
+    assert analysis["patterns_found"] > 0
+    
+    # Test improvement
+    improvement = await generate_improvement(analysis)
+    assert improvement["expected_benefit"] > 0
+```

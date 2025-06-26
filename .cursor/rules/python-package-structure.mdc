@@ -8,9 +8,74 @@ description: Python package structure requirements and import patterns for the L
 alwaysApply: false
 ---
 
-# Python Package Structure Requirements
+# Python Package Structure V2 - Self-Improving Platform
 
-**CRITICAL**: This platform requires proper Python package structure. Follow these rules strictly:
+**CRITICAL**: This platform requires proper Python package structure for self-improving architecture. Follow these rules strictly:
+
+## Enhanced Structure for Self-Improvement
+
+```
+ai-agent-platform/
+├── __init__.py
+├── agents/
+│   ├── __init__.py
+│   ├── universal_agent.py          # NEW: Configuration-driven
+│   ├── base/
+│   │   ├── __init__.py
+│   │   └── base_agent.py
+│   ├── improvement/                 # NEW: Self-improvement agents
+│   │   ├── __init__.py
+│   │   ├── workflow_analyst.py
+│   │   ├── pattern_recognition.py
+│   │   ├── error_recovery.py
+│   │   ├── cost_optimizer.py
+│   │   ├── feedback_handler.py
+│   │   └── README.llm.md
+│   └── legacy/                      # Original agents
+│       ├── __init__.py
+│       ├── general/
+│       │   ├── __init__.py
+│       │   ├── general_agent.py
+│       │   └── README.llm.md
+│       ├── technical/
+│       │   ├── __init__.py
+│       │   ├── technical_agent.py
+│       │   └── README.llm.md
+│       ├── research/
+│       │   ├── __init__.py
+│       │   ├── research_agent.py
+│       │   └── README.llm.md
+│       └── README.llm.md
+├── orchestrator/
+│   ├── __init__.py
+│   ├── agent_orchestrator.py       # UPDATED: Spawning support
+│   ├── improvement_orchestrator.py  # NEW
+│   ├── lazy_loader.py              # NEW
+│   ├── resource_manager.py         # NEW
+│   └── README.llm.md
+├── events/                          # NEW
+│   ├── __init__.py
+│   ├── event_bus.py
+│   ├── event_types.py
+│   └── README.llm.md
+├── goals/                           # NEW
+│   ├── __init__.py
+│   ├── goal_manager.py
+│   ├── task_decomposer.py
+│   └── README.llm.md
+├── resources/                       # NEW
+│   ├── __init__.py
+│   ├── pool_manager.py
+│   ├── budget_manager.py
+│   └── README.llm.md
+├── database/
+│   ├── __init__.py
+│   ├── migrations/
+│   │   ├── 001_vector_memory.sql
+│   │   └── 002_self_improvement.sql  # NEW
+│   ├── supabase_logger.py           # UPDATED
+│   └── README.llm.md
+```
 
 ## __init__.py Files Are MANDATORY
 
@@ -18,18 +83,7 @@ alwaysApply: false
 # Every directory that contains Python modules MUST have __init__.py
 # These files make directories recognizable as Python packages
 
-# Example structure:
-agents/
-├── __init__.py                 # ✅ Required
-├── general/
-│   ├── __init__.py             # ✅ Required  
-│   └── general_agent.py
-├── technical/
-│   ├── __init__.py             # ✅ Required
-│   └── technical_agent.py
-└── research/
-    ├── __init__.py             # ✅ Required
-    └── research_agent.py
+# NEW: Each __init__.py should support self-improving architecture
 ```
 
 ## Package __init__.py Content Pattern
@@ -40,30 +94,60 @@ agents/
 Package Description
 
 Brief description of what this package does in the LLM platform context.
+Mention self-improvement capabilities if applicable.
 """
 
 from .main_module import MainClass, main_function
 
+# NEW: Export self-improvement components if present
+try:
+    from .improvement import *
+except ImportError:
+    pass
+
 __all__ = ['MainClass', 'main_function']
 ```
 
-## Directory Naming Rules
-- **Never use names that conflict with external libraries** (e.g., `supabase/`)
-- Use descriptive names: `database/`, `agents/`, `orchestrator/`
-- Avoid generic names like `lib/`, `utils/`, `core/`
-
-## Import Patterns
+## Import Patterns for Self-Improvement
 
 ```python
-# ✅ Correct import patterns
-from orchestrator import AgentOrchestrator, AgentType
-from agents import GeneralAgent, TechnicalAgent, ResearchAgent
+# ✅ Correct patterns for new architecture
+from agents import UniversalAgent
+from agents.improvement import WorkflowAnalyst, PatternRecognition
+from orchestrator import spawn_specialist_agent, get_agent
+from events import EVENT_BUS, publish_event
+from goals import GoalManager, decompose_goal
+
+# ✅ Legacy imports (during transition)
+from agents.legacy import GeneralAgent, TechnicalAgent, ResearchAgent
+from orchestrator import AgentOrchestrator
 from database import SupabaseLogger
 
-# ❌ Avoid direct module imports that bypass __init__.py
-from orchestrator.agent_orchestrator import AgentOrchestrator
-from agents.general.general_agent import GeneralAgent
+# ❌ Avoid deep imports
+from agents.improvement.workflow_analyst import WorkflowAnalyst
 ```
+
+## README.llm.md Requirements
+
+Every directory MUST have a README.llm.md explaining:
+
+1. **Purpose** - What this module does
+2. **LLM Integration** - How ChatGPT is used
+3. **Self-Improvement** - How this module learns and improves
+4. **Dependencies** - External requirements  
+5. **Cost Impact** - Token usage and API costs
+6. **Agent Types** - Which agents use this module
+7. **Configuration** - LLM settings (temperature, tokens, etc.)
+8. **Event Patterns** - Which events are published/consumed
+
+## File Naming Conventions
+
+- `universal_agent.py` - Configuration-driven agent
+- `*_orchestrator.py` - Orchestration classes
+- `*_analyst.py` - Analysis/improvement classes
+- `*_manager.py` - Management classes
+- `*_logger.py` - Logging utilities
+- `README.llm.md` - LLM-focused documentation
 
 ## Development Setup Requirements
 
@@ -81,6 +165,7 @@ if project_root not in sys.path:
 
 # Now imports will work correctly
 from orchestrator import AgentOrchestrator
+from events import EVENT_BUS
 ```
 
 ## Package Structure Validation
@@ -91,3 +176,5 @@ Before committing code, verify:
 - [ ] No directory names conflict with external libraries
 - [ ] Import statements use package-level imports when possible
 - [ ] Startup scripts properly configure Python path
+- [ ] Self-improvement modules are properly organized
+- [ ] Event-driven patterns are implemented

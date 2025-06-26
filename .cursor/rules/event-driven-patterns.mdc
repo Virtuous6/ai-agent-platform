@@ -1,0 +1,108 @@
+---
+description:
+globs:
+alwaysApply: false
+---
+# Event-Driven Architecture Patterns
+
+## Event Bus Implementation
+
+```python
+class EventBus:
+    """Central event bus for agent communication."""
+    
+    def __init__(self):
+        self.subscribers = defaultdict(list)
+        self.event_queue = asyncio.Queue(maxsize=10000)
+        self.handlers = {}
+        
+    async def publish(self, event_type: str, data: Dict, 
+                     source: str = None):
+        """Publish event without knowing subscribers."""
+        event = Event(
+            id=str(uuid.uuid4()),
+            type=event_type,
+            data=data,
+            source=source,
+            timestamp=datetime.utcnow()
+        )
+        
+        await self.event_queue.put(event)
+        
+    async def subscribe(self, subscriber_id: str, 
+                       event_types: List[str],
+                       handler: Callable = None):
+        """Subscribe to event types."""
+        for event_type in event_types:
+            self.subscribers[event_type].append(subscriber_id)
+            if handler:
+                self.handlers[f"{subscriber_id}:{event_type}"] = handler
+
+# Global event bus
+EVENT_BUS = EventBus()
+```
+
+## Agent Event Integration
+
+```python
+class EventAwareAgent:
+    """Agents communicate through events."""
+    
+    async def __init__(self, agent_id: str):
+        self.agent_id = agent_id
+        
+        # Subscribe to relevant events
+        await EVENT_BUS.subscribe(
+            self.agent_id,
+            ["workflow_completed", "pattern_found", "improvement_available"],
+            self.handle_event
+        )
+    
+    async def process_message(self, message: str, context: Dict) -> Dict:
+        result = await self._process(message, context)
+        
+        # Publish completion event
+        await EVENT_BUS.publish(
+            "agent_task_completed",
+            {
+                "agent_id": self.agent_id,
+                "task_type": self.specialty,
+                "success": result.get("success", True),
+                "duration": result.get("duration")
+            },
+            source=self.agent_id
+        )
+        
+        return result
+    
+    async def handle_event(self, event: Event):
+        """Handle incoming events."""
+        if event.type == "improvement_available":
+            await self.apply_improvement(event.data)
+```
+
+## Event Patterns
+
+```python
+# Common event types
+EVENTS = {
+    # Workflow events
+    "workflow_started": "New workflow execution began",
+    "workflow_completed": "Workflow finished successfully",
+    "workflow_failed": "Workflow encountered error",
+    
+    # Agent events
+    "agent_spawned": "New specialist agent created",
+    "agent_activated": "Agent loaded into memory",
+    "agent_deactivated": "Agent unloaded from memory",
+    
+    # Improvement events
+    "pattern_discovered": "New pattern found",
+    "improvement_applied": "System improvement made",
+    "cost_threshold_reached": "Cost limit approaching",
+    
+    # User events
+    "feedback_received": "User provided feedback",
+    "workflow_saved": "User saved workflow"
+}
+```

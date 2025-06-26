@@ -1,0 +1,69 @@
+---
+description:
+globs:
+alwaysApply: false
+---
+# Self-Improving AI Agent Platform Core Principles
+
+## Project Context
+You are building a **Self-Improving LLM-Powered AI Agent Platform** that learns from every interaction, spawns specialized agents dynamically, and continuously optimizes itself.
+
+## 🧠 Self-Improvement First Principles
+
+### 1. Every Interaction Teaches
+- **Track all workflows** with unique run_ids
+- **Analyze completion** for patterns and bottlenecks
+- **Extract learnings** from successes and failures
+- **Apply improvements** automatically or with user consent
+
+### 2. Dynamic Agent Architecture
+- **Spawn specialists on-demand** using configuration, not classes
+- **Lazy load agents** - max 50 active from 1000+ configurations
+- **Universal agent pattern** - configuration-driven capabilities
+- **Auto-cleanup** inactive agents after 24 hours
+
+### 3. Continuous Learning Loop
+```python
+# Every component must support the learning cycle
+class SelfImprovingComponent:
+    async def execute(self, context: Dict) -> Dict:
+        run_id = str(uuid.uuid4())
+        result = await self._perform_task(context)
+        await self._track_execution(run_id, result)
+        asyncio.create_task(self._analyze_for_improvement(run_id))
+        return result
+```
+
+### 4. User Feedback Integration
+- **/improve** - Users directly improve workflows
+- **/save-workflow** - Capture successful patterns
+- **Feedback drives evolution** - User input shapes the system
+
+### 5. Cost Optimization Built-In
+```python
+# Every LLM call must be optimized
+async def optimized_llm_call(self, prompt: str) -> str:
+    # Check if cached response exists
+    if cached := await self.check_cache(prompt):
+        return cached
+    
+    # Optimize prompt for fewer tokens
+    optimized_prompt = await self.optimize_prompt(prompt)
+    
+    # Use appropriate model for task
+    model = self.select_optimal_model(optimized_prompt)
+    
+    # Track and optimize
+    response = await self.llm.call(optimized_prompt, model)
+    await self.track_usage_for_optimization(response)
+    return response
+```
+
+## 🚫 Updated Forbidden Patterns
+- **No static agent definitions** - Use dynamic spawning
+- **No unlimited agent creation** - Enforce resource budgets
+- **No isolated improvements** - All learnings must propagate
+- **No untracked workflows** - Every execution gets analyzed
+- **No ignored user feedback** - All feedback drives improvement
+- **No synchronous LLM calls** - Always use async for ChatGPT integration
+- **No untracked LLM usage** - Always monitor tokens and costs

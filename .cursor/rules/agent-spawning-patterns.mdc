@@ -1,0 +1,118 @@
+---
+description:
+globs:
+alwaysApply: false
+---
+# Dynamic Agent Spawning Patterns
+
+## Agent Creation Without Classes
+
+```python
+# ❌ OLD: Creating agent classes
+class NewSpecialistAgent(BaseAgent):
+    def __init__(self):
+        super().__init__()
+
+# ✅ NEW: Spawn agents dynamically
+async def spawn_specialist_agent(self, specialty: str, context: Dict) -> str:
+    agent_id = f"{specialty}_{uuid.uuid4().hex[:8]}"
+    
+    # Generate specialized configuration
+    agent_config = {
+        "agent_id": agent_id,
+        "specialty": specialty,
+        "system_prompt": await self._generate_specialist_prompt(specialty, context),
+        "temperature": self._calculate_optimal_temperature(specialty),
+        "tools": self._determine_required_tools(specialty),
+        "parent_context": context
+    }
+    
+    # Store configuration only (not instance)
+    self.agent_registry[agent_id] = agent_config
+    
+    # Track spawn event
+    await self.db_logger.log_agent_spawn(agent_id, agent_config)
+    
+    return agent_id
+```
+
+## Lazy Loading Pattern
+
+```python
+async def get_agent(self, agent_id: str) -> UniversalAgent:
+    """Load agent only when needed."""
+    # Check if already active
+    if agent_id in self.active_agents:
+        self.last_activity[agent_id] = datetime.utcnow()
+        return self.active_agents[agent_id]
+    
+    # Check registry
+    if agent_id not in self.agent_registry:
+        raise AgentNotFoundException(f"Agent {agent_id} not found")
+    
+    # Enforce active limit
+    if len(self.active_agents) >= self.max_active_agents:
+        await self._evict_least_recently_used()
+    
+    # Create from configuration
+    config = self.agent_registry[agent_id]
+    agent = UniversalAgent(**config)
+    
+    self.active_agents[agent_id] = agent
+    self.last_activity[agent_id] = datetime.utcnow()
+    
+    return agent
+```
+
+## Universal Agent Pattern
+
+```python
+class UniversalAgent:
+    """Configuration-driven agent that can be any specialty."""
+    
+    def __init__(self, agent_id: str, specialty: str, 
+                 system_prompt: str, temperature: float = 0.7,
+                 tools: List[str] = None):
+        self.agent_id = agent_id
+        self.specialty = specialty
+        self.llm = ChatOpenAI(
+            model="gpt-3.5-turbo-0125",
+            temperature=temperature,
+            max_tokens=800
+        )
+        self.system_prompt = system_prompt
+        self.tools = tools or []
+        
+    async def process_message(self, message: str, context: Dict) -> Dict:
+        # Same interface as all agents
+        response = await self.llm.ainvoke(
+            self._build_prompt(message, context)
+        )
+        
+        return {
+            "response": response.content,
+            "agent_id": self.agent_id,
+            "specialty": self.specialty,
+            "confidence": self._calculate_confidence(response)
+        }
+```
+
+## Resource Management
+
+```python
+# Always enforce resource limits
+class ResourceBudget:
+    max_agents: int = 100
+    max_concurrent: int = 10
+    max_daily_cost: float = 10.0
+    
+async def can_spawn_agent(self, goal_id: str) -> bool:
+    budget = self.budgets[goal_id]
+    current = await self.get_current_usage(goal_id)
+    
+    return all([
+        current.agents < budget.max_agents,
+        current.concurrent < budget.max_concurrent,
+        current.cost < budget.max_daily_cost
+    ])
+```

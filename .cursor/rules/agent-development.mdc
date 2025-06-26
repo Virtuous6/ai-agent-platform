@@ -1,6 +1,6 @@
 ---
-description:
-globs:
+description: 
+globs: 
 alwaysApply: false
 ---
 ---
@@ -11,9 +11,9 @@ alwaysApply: false
 
 # ChatGPT Agent Development Patterns
 
-## Agent Creation Template
+## ⚠️ DEPRECATED: Agent Creation Template
 
-When creating any new LLM agent:
+**OLD WAY (Legacy)** - Use only for existing agents:
 
 ```python
 # 1. Import LLM dependencies
@@ -29,13 +29,28 @@ class NewAgent:
             max_tokens=500
         )
         self.prompt = self._create_specialized_prompt()
-    
-    def _create_specialized_prompt(self):
-        return ChatPromptTemplate.from_messages([...])
+```
 
-# 3. Create README.llm.md with LLM details
-# 4. Update agents/README.llm.md with new agent
-# 5. Add to orchestrator routing logic
+## ✅ NEW WAY: Dynamic Agent Spawning
+
+**PREFERRED** - Use dynamic spawning for all new agents:
+
+```python
+# 1. Spawn agents dynamically instead of creating classes
+agent_id = await orchestrator.spawn_specialist_agent(
+    specialty="data_analysis",
+    context={
+        "focus": "sales_metrics",
+        "temperature": 0.3,
+        "max_tokens": 800
+    }
+)
+
+# 2. Use the UniversalAgent pattern
+from agents import UniversalAgent
+
+# 3. Update orchestrator with spawning capabilities
+# 4. Track all agent interactions for learning
 ```
 
 ## LLM Response Processing Pattern
@@ -86,6 +101,40 @@ async def process_llm_response(self, llm_response, context: dict) -> dict:
 
 ## Agent Types and Temperatures
 
+### Legacy Agents (Static)
 - **General Agent**: temp: 0.7, conversational
 - **Technical Agent**: temp: 0.3, precise  
 - **Research Agent**: temp: 0.4, analytical
+
+### Dynamic Agents (Preferred)
+- **Spawned specialists**: temp determined by context and learning
+- **Universal agents**: configuration-driven behavior
+- **Self-improving**: temperature optimized through experience
+
+## Self-Improvement Integration
+
+Every agent interaction must support learning:
+
+```python
+async def process_with_tracking(self, message: str, context: dict) -> dict:
+    """Process with self-improvement tracking."""
+    run_id = str(uuid.uuid4())
+    
+    try:
+        # Process with LLM
+        response = await self._process_with_llm(message, context)
+        
+        # Track for improvement
+        await self._track_success(run_id, response)
+        
+        return response
+        
+    except Exception as e:
+        # Learn from failures
+        await self._track_failure(run_id, e)
+        return await self._fallback_response(message)
+    
+    finally:
+        # Always analyze
+        asyncio.create_task(self._analyze_interaction(run_id))
+```
