@@ -1,4 +1,7 @@
-/.cursor
+# Cursor settings (but allow project rules)
+/.cursor/*
+!/.cursor/rules/
+
 /.env
 /.venv
 /venv
