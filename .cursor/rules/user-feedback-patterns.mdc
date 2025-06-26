@@ -1,8 +1,14 @@
 ---
-description:
-globs:
+description: 
+globs: 
 alwaysApply: false
 ---
+---
+description: Patterns for user feedback integration and workflow management
+globs: ["slack_interface/**/*.py", "agents/improvement/**/*.py"]
+alwaysApply: false
+---
+
 # User Feedback Integration Patterns
 
 ## Slash Command Implementation

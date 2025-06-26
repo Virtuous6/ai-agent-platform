@@ -1,8 +1,14 @@
 ---
-description:
-globs:
+description: 
+globs: 
 alwaysApply: false
 ---
+---
+description: Patterns for workflow analysis and self-improvement
+globs: ["agents/improvement/**/*.py", "orchestrator/**/*.py"]
+alwaysApply: false
+---
+
 # Workflow Analysis & Self-Improvement Patterns
 
 ## Workflow Tracking Pattern

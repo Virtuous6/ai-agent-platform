@@ -1,8 +1,14 @@
 ---
-description:
-globs:
+description: 
+globs: 
 alwaysApply: false
 ---
+---
+description: Patterns for dynamic agent spawning and lifecycle management
+globs: ["agents/**/*.py", "orchestrator/**/*.py"]
+alwaysApply: false
+---
+
 # Dynamic Agent Spawning Patterns
 
 ## Agent Creation Without Classes

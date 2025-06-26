@@ -1,8 +1,13 @@
 ---
-description:
-globs:
-alwaysApply: false
+description: 
+globs: 
+alwaysApply: true
 ---
+---
+description: Event-driven architecture patterns - ALL components should use events
+alwaysApply: true
+---
+
 # Event-Driven Architecture Patterns
 
 ## Event Bus Implementation
