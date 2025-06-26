@@ -143,14 +143,23 @@ class AgentOrchestrator:
         self.research_agent = research_agent
         
         # Self-improvement components
-        self.agent_registry = {}  # Store agent configurations without instances
-        self.active_agents = OrderedDict()  # LRU cache of active agents
         self.resource_budget = ResourceBudget()
         self.event_bus = EventBus()
         self.db_logger = db_logger
         
-        # Agent lifecycle tracking
-        self.agent_last_used = {}  # Track when agents were last used
+        # Initialize Lazy Agent Loader for 1000+ configurations with 50 active
+        from orchestrator.lazy_loader import LazyAgentLoader
+        self.lazy_loader = LazyAgentLoader(
+            max_active_agents=50,
+            max_total_configurations=1000,
+            preload_threshold=0.7,
+            cleanup_interval=3600
+        )
+        
+        # Legacy support - maintain old interface
+        self.agent_registry = {}  # Deprecated - use lazy_loader instead
+        self.active_agents = OrderedDict()  # Deprecated - use lazy_loader instead
+        self.agent_last_used = {}  # Deprecated - use lazy_loader instead
         self.cleanup_task = None
         
         # Initialize Improvement Orchestrator
@@ -245,8 +254,34 @@ Always be:
                     context_info += f"User often asks about: {parent_context['user_pattern']}"
                 system_prompt += context_info
             
-            # Store agent configuration (not instance)
-            agent_config = {
+            # Create agent configuration for lazy loader
+            from orchestrator.lazy_loader import AgentConfiguration
+            
+            agent_config = AgentConfiguration(
+                agent_id=agent_id,
+                specialty=specialty,
+                system_prompt=system_prompt,
+                temperature=temperature,
+                model_name="gpt-3.5-turbo-0125",
+                max_tokens=max_tokens,
+                tools=[],  # No tools by default
+                created_at=datetime.utcnow(),
+                last_used=datetime.utcnow(),
+                usage_count=0,
+                success_rate=1.0,
+                average_response_time=0.0,
+                total_cost=0.0,
+                priority_score=0.5  # Default priority
+            )
+            
+            # Add to lazy loader
+            success = await self.lazy_loader.add_agent_configuration(agent_config)
+            if not success:
+                logger.error(f"Failed to add agent configuration to lazy loader: {agent_id}")
+                return None
+            
+            # Legacy support - also store in old registry
+            self.agent_registry[agent_id] = {
                 "agent_id": agent_id,
                 "specialty": specialty,
                 "system_prompt": system_prompt,
@@ -258,17 +293,6 @@ Always be:
                 "parent_context": parent_context or {},
                 "model": "gpt-3.5-turbo-0125"
             }
-            
-            # Check if we're at max capacity
-            if len(self.agent_registry) >= self.resource_budget.max_agents:
-                # Remove oldest unused agent
-                oldest_agent = min(self.agent_registry.items(), 
-                                 key=lambda x: x[1]["last_used"])
-                del self.agent_registry[oldest_agent[0]]
-                logger.info(f"Removed oldest agent {oldest_agent[0]} to make room")
-            
-            # Store in registry
-            self.agent_registry[agent_id] = agent_config
             
             # Log the spawn event
             if self.db_logger:
@@ -306,6 +330,19 @@ Always be:
             Agent instance if successful, None otherwise
         """
         try:
+            # Use lazy loader for efficient agent management
+            agent = await self.lazy_loader.get_agent(agent_id)
+            if agent:
+                # Update legacy tracking for compatibility
+                self.agent_last_used[agent_id] = datetime.utcnow()
+                if agent_id not in self.active_agents:
+                    # Manage legacy active agents cache
+                    while len(self.active_agents) >= 50:
+                        self.active_agents.popitem(last=False)
+                    self.active_agents[agent_id] = agent
+                return agent
+            
+            # Fallback to legacy method if not in lazy loader
             # Check if already active
             if agent_id in self.active_agents:
                 # Move to end (most recently used)
@@ -451,12 +488,25 @@ Always be:
     
     def get_agent_stats(self) -> Dict[str, Any]:
         """Get statistics about agent spawning and usage."""
+        # Get lazy loader metrics
+        lazy_metrics = self.lazy_loader.get_cache_metrics()
+        
         return {
+            # Legacy stats for compatibility
             "total_agents": len(self.agent_registry),
             "active_agents": len(self.active_agents),
             "max_capacity": self.resource_budget.max_agents,
             "spawns_this_hour": len(self.resource_budget.spawn_times),
             "hourly_cost": self.resource_budget.hourly_cost,
+            
+            # Lazy loader advanced metrics
+            "lazy_loader": lazy_metrics,
+            
+            # Cache performance
+            "cache_hit_rate": lazy_metrics["cache_performance"]["hit_rate"],
+            "cache_utilization": lazy_metrics["agent_status"]["cache_utilization"],
+            
+            # Recent spawns from legacy registry
             "recent_spawns": [
                 {
                     "agent_id": aid,
@@ -1090,6 +1140,14 @@ Respond with JSON only.
                 except Exception as e:
                     logger.error(f"Error closing improvement orchestrator: {e}")
             
+            # Close lazy loader (manages all specialist agents efficiently)
+            if hasattr(self, 'lazy_loader'):
+                try:
+                    await self.lazy_loader.close()
+                    logger.info("Closed Lazy Agent Loader")
+                except Exception as e:
+                    logger.error(f"Error closing lazy loader: {e}")
+            
             # Cancel cleanup task
             if self.cleanup_task and not self.cleanup_task.done():
                 self.cleanup_task.cancel()
@@ -1099,13 +1157,13 @@ Respond with JSON only.
                     pass
                 logger.info("Cancelled cleanup task")
             
-            # Close all active specialist agents
+            # Close any remaining legacy active specialist agents
             for agent_id, agent in self.active_agents.items():
                 try:
                     await agent.close()
-                    logger.debug(f"Closed specialist agent: {agent_id}")
+                    logger.debug(f"Closed legacy specialist agent: {agent_id}")
                 except Exception as e:
-                    logger.warning(f"Error closing specialist agent {agent_id}: {e}")
+                    logger.warning(f"Error closing legacy specialist agent {agent_id}: {e}")
             
             # Close LangGraph workflow engine if available
             if hasattr(self, '_workflow_engine'):

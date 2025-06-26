@@ -9,7 +9,7 @@ This module tests all features of the event-driven architecture including:
 - Event persistence and replay
 - Metrics and monitoring
 
-Created: December 2024
+Created: June 2025
 """
 
 import asyncio

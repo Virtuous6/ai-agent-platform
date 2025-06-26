@@ -4,7 +4,7 @@ Event Bus Integration Example
 This demonstrates how the Event Bus integrates with the existing
 AI Agent Platform components for loose coupling and better scalability.
 
-Created: December 2024
+Created: June 2025
 """
 
 import asyncio

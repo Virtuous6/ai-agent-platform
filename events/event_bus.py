@@ -12,8 +12,8 @@ Features:
 - Event routing without direct agent dependencies
 - Real-time event monitoring and metrics
 
-Created: December 2024
-Updated: December 2024
+Created: June 2025
+Updated: June 2025
 """
 
 import asyncio
