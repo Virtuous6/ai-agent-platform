@@ -153,6 +153,9 @@ class AgentOrchestrator:
         self.agent_last_used = {}  # Track when agents were last used
         self.cleanup_task = None
         
+        # Initialize Improvement Orchestrator
+        self.improvement_orchestrator = None
+        
         # Initialize LLM for intelligent intent classification
         self.intent_llm = ChatOpenAI(
             model="gpt-3.5-turbo-0125",  # Fast and cost-effective for classification
@@ -169,7 +172,29 @@ class AgentOrchestrator:
         # Start cleanup task
         self._start_cleanup_task()
         
+        # Initialize improvement orchestrator after everything else is set up
+        self._initialize_improvement_orchestrator()
+        
         logger.info("Agent Orchestrator initialized with self-improvement capabilities")
+
+    def _initialize_improvement_orchestrator(self):
+        """Initialize the Improvement Orchestrator for continuous self-improvement."""
+        try:
+            from orchestrator.improvement_orchestrator import ImprovementOrchestrator
+            
+            self.improvement_orchestrator = ImprovementOrchestrator(
+                main_orchestrator=self,
+                db_logger=self.db_logger
+            )
+            
+            logger.info("Improvement Orchestrator initialized successfully")
+            
+        except ImportError as e:
+            logger.warning(f"Could not initialize Improvement Orchestrator: {e}")
+            self.improvement_orchestrator = None
+        except Exception as e:
+            logger.error(f"Error initializing Improvement Orchestrator: {e}")
+            self.improvement_orchestrator = None
 
     async def spawn_specialist_agent(self, specialty: str, parent_context: Optional[Dict[str, Any]] = None,
                                    temperature: float = 0.4, max_tokens: int = 500) -> str:
@@ -1005,6 +1030,48 @@ Respond with JSON only.
         else:
             return 'answer-question'  # Default fallback
 
+    async def get_improvement_status(self) -> Dict[str, Any]:
+        """Get current improvement system status."""
+        if self.improvement_orchestrator:
+            return await self.improvement_orchestrator.get_improvement_status()
+        else:
+            return {
+                "improvement_orchestrator": "not_initialized",
+                "message": "Improvement orchestrator is not available"
+            }
+
+    async def force_improvement_cycle(self, cycle_type: str) -> Dict[str, Any]:
+        """Force execution of a specific improvement cycle."""
+        if self.improvement_orchestrator:
+            from orchestrator.improvement_orchestrator import ImprovementCycle
+            try:
+                cycle = ImprovementCycle(cycle_type.lower())
+                return await self.improvement_orchestrator.force_improvement_cycle(cycle)
+            except ValueError:
+                return {
+                    "success": False,
+                    "error": f"Invalid cycle type: {cycle_type}. Valid types: real_time, hourly, daily, weekly, monthly"
+                }
+        else:
+            return {
+                "success": False,
+                "error": "Improvement orchestrator is not available"
+            }
+
+    async def pause_improvements(self, duration_minutes: int = 60) -> Dict[str, Any]:
+        """Temporarily pause improvement activities."""
+        if self.improvement_orchestrator:
+            await self.improvement_orchestrator.pause_improvements(duration_minutes)
+            return {
+                "success": True,
+                "message": f"Improvements paused for {duration_minutes} minutes"
+            }
+        else:
+            return {
+                "success": False,
+                "error": "Improvement orchestrator is not available"
+            }
+
     async def close(self):
         """
         Close the orchestrator and cleanup agent resources.
@@ -1014,6 +1081,14 @@ Respond with JSON only.
         """
         try:
             logger.info("Closing Agent Orchestrator...")
+            
+            # Close improvement orchestrator first
+            if self.improvement_orchestrator:
+                try:
+                    await self.improvement_orchestrator.close()
+                    logger.info("Closed Improvement Orchestrator")
+                except Exception as e:
+                    logger.error(f"Error closing improvement orchestrator: {e}")
             
             # Cancel cleanup task
             if self.cleanup_task and not self.cleanup_task.done():
