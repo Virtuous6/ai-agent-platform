@@ -35,6 +35,9 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent.parent))
 from database.supabase_logger import SupabaseLogger
 
+# Import feedback handler
+from agents.improvement.feedback_handler import FeedbackHandler
+
 # Configure logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -81,6 +84,17 @@ class AIAgentSlackBot:
             logger.warning("Bot will continue with console logging only")
             self.supabase_logger = None
         
+        # Initialize feedback handler
+        try:
+            self.feedback_handler = FeedbackHandler(
+                db_logger=self.supabase_logger,
+                orchestrator=self.orchestrator
+            )
+            logger.info("✅ Feedback handler initialized successfully")
+        except Exception as e:
+            logger.warning(f"❌ Feedback handler initialization failed: {str(e)}")
+            self.feedback_handler = None
+        
         # Bot user ID for mention detection
         self.bot_user_id = None
         
@@ -111,6 +125,27 @@ class AIAgentSlackBot:
         @self.app.event("app_home_opened")
         async def handle_app_home_opened(event, client):
             await self._handle_app_home(event, client)
+        
+        # Handle feedback slash commands
+        @self.app.command("/improve")
+        async def handle_improve_command(ack, say, command, client):
+            await ack()
+            await self._handle_feedback_command("improve", command, say, client)
+        
+        @self.app.command("/save-workflow")
+        async def handle_save_workflow_command(ack, say, command, client):
+            await ack()
+            await self._handle_feedback_command("save-workflow", command, say, client)
+        
+        @self.app.command("/list-workflows")
+        async def handle_list_workflows_command(ack, say, command, client):
+            await ack()
+            await self._handle_feedback_command("list-workflows", command, say, client)
+        
+        @self.app.command("/feedback")
+        async def handle_feedback_command(ack, say, command, client):
+            await ack()
+            await self._handle_feedback_command("feedback", command, say, client)
     
     async def _handle_message(self, event: Dict[str, Any], say, client, is_mention: bool = False):
         """
@@ -309,6 +344,48 @@ class AIAgentSlackBot:
             
         except Exception as e:
             logger.error(f"Error handling app home: {str(e)}")
+    
+    async def _handle_feedback_command(self, command_type: str, command, say, client):
+        """Handle feedback slash commands."""
+        try:
+            if not self.feedback_handler:
+                await say("❌ Feedback system is currently unavailable. Please try again later.")
+                return
+            
+            user_id = command["user_id"]
+            channel_id = command["channel_id"]
+            text = command.get("text", "")
+            
+            # Build context for feedback processing
+            conversation_id = await self._get_or_create_conversation(user_id, channel_id, None)
+            context = await self._build_context(user_id, channel_id, None, conversation_id)
+            
+            # Process the feedback command
+            result = await self.feedback_handler.process_feedback_command(
+                command=command_type,
+                user_id=user_id,
+                message_content=f"/{command_type} {text}",
+                context=context
+            )
+            
+            # Send response
+            await say(result["message"])
+            
+            # Log the interaction
+            await self._log_interaction(
+                conversation_id=conversation_id,
+                user_id=user_id,
+                channel_id=channel_id,
+                content=f"/{command_type} {text}",
+                interaction_type="feedback_command",
+                agent_type="feedback_handler"
+            )
+            
+            logger.info(f"✅ Processed feedback command: /{command_type} from {user_id}")
+            
+        except Exception as e:
+            logger.error(f"Error handling feedback command: {str(e)}")
+            await say(f"❌ Error processing command: {str(e)}")
     
     async def _clean_message_text(self, text: str) -> str:
         """
