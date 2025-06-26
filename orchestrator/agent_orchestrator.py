@@ -530,6 +530,108 @@ Respond with JSON only.
             "last_request": self.request_history[-1]["timestamp"]
         }
     
+    async def process_with_langgraph(self, message: str, context: Dict[str, Any], 
+                               runbook_name: Optional[str] = None) -> Dict[str, Any]:
+        """
+        Process message using LangGraph workflow execution.
+        
+        Falls back to standard routing if LangGraph unavailable.
+        """
+        try:
+            from .langgraph import LangGraphWorkflowEngine
+            
+            # Initialize workflow engine if not already done
+            if not hasattr(self, '_workflow_engine'):
+                self._workflow_engine = LangGraphWorkflowEngine(
+                    agents={
+                        'general': self.general_agent,
+                        'technical': self.technical_agent,
+                        'research': self.research_agent
+                    },
+                    tools=getattr(self, 'tools', {}),
+                    supabase_logger=getattr(self, 'supabase_logger', None)
+                )
+            
+            # Check if LangGraph is available
+            if not self._workflow_engine.is_available():
+                logger.info("LangGraph not available, falling back to standard routing")
+                return await self.route_request(message, context)
+            
+            # Determine appropriate runbook
+            if not runbook_name:
+                runbook_name = await self._select_runbook_for_message(message, context)
+            
+            # Load and execute runbook workflow
+            workflow = await self._workflow_engine.load_runbook_workflow(
+                f"runbooks/active/{runbook_name}.yaml"
+            )
+            
+            if not workflow:
+                logger.warning("Failed to load workflow, falling back to standard routing")
+                return await self.route_request(message, context)
+            
+            initial_state = {
+                'user_id': context.get('user_id', 'unknown'),
+                'user_message': message,
+                'conversation_id': context.get('conversation_id'),
+                'channel_id': context.get('channel_id'),
+                'current_step': 'start',
+                'execution_history': [],
+                'error_count': 0,
+                'agent_responses': {},
+                'tool_results': {},
+                'conversation_history': context.get('conversation_history', []),
+                'retrieved_memories': [],
+                'user_preferences': context.get('user_preferences', {}),
+                'routing_confidence': 0.0,
+                'confidence_score': 0.0,
+                'processing_time_ms': 0.0,
+                'tokens_used': 0,
+                'estimated_cost': 0.0,
+                'needs_escalation': False,
+                'retry_count': 0,
+                'max_retries': 3
+            }
+            
+            result = await self._workflow_engine.execute_workflow(runbook_name, initial_state)
+            
+            logger.info(f"LangGraph workflow '{runbook_name}' completed successfully")
+            return {
+                'response': result.get('final_response', 'Workflow completed'),
+                'agent_type': result.get('selected_agent', 'workflow'),
+                'agent_name': f"LangGraph Workflow: {runbook_name}",
+                'confidence': result.get('confidence_score', 1.0),
+                'tokens_used': result.get('tokens_used', 0),
+                'metadata': {
+                    'workflow_used': runbook_name,
+                    'execution_time': result.get('processing_time_ms', 0),
+                    'tokens_used': result.get('tokens_used', 0),
+                    'estimated_cost': result.get('estimated_cost', 0),
+                    'langgraph_enabled': True
+                }
+            }
+            
+        except Exception as e:
+            logger.warning(f"LangGraph processing failed, falling back to standard routing: {e}")
+            return await self.route_request(message, context)
+
+    async def _select_runbook_for_message(self, message: str, context: Dict[str, Any]) -> str:
+        """Select appropriate runbook based on message analysis."""
+        
+        # Simple keyword-based selection for now
+        # TODO: Enhance with LLM-based runbook selection
+        
+        message_lower = message.lower()
+        
+        if any(word in message_lower for word in ['what', 'how', 'why', 'when', 'where', 'who', '?']):
+            return 'answer-question'
+        elif any(word in message_lower for word in ['code', 'debug', 'error', 'bug', 'technical']):
+            return 'technical-support'  # Create this next
+        elif any(word in message_lower for word in ['research', 'analyze', 'study', 'investigate']):
+            return 'research-task'  # Create this next
+        else:
+            return 'answer-question'  # Default fallback
+
     async def close(self):
         """
         Close the orchestrator and cleanup agent resources.
@@ -539,6 +641,14 @@ Respond with JSON only.
         """
         try:
             logger.info("Closing Agent Orchestrator...")
+            
+            # Close LangGraph workflow engine if available
+            if hasattr(self, '_workflow_engine'):
+                try:
+                    await self._workflow_engine.close()
+                    logger.info("Closed LangGraph Workflow Engine")
+                except Exception as e:
+                    logger.warning(f"Error closing workflow engine: {e}")
             
             # Close all available agents
             agents_to_close = [
