@@ -1,0 +1,33 @@
+images:
+- gcr.io/$PROJECT_ID/ai-agent-platform:$COMMIT_SHA
+- gcr.io/$PROJECT_ID/ai-agent-platform:latest
+steps:
+- args:
+  - build
+  - -t
+  - gcr.io/$PROJECT_ID/ai-agent-platform:$COMMIT_SHA
+  - -t
+  - gcr.io/$PROJECT_ID/ai-agent-platform:latest
+  - .
+  name: gcr.io/cloud-builders/docker
+- args:
+  - push
+  - gcr.io/$PROJECT_ID/ai-agent-platform:$COMMIT_SHA
+  name: gcr.io/cloud-builders/docker
+- args:
+  - push
+  - gcr.io/$PROJECT_ID/ai-agent-platform:latest
+  name: gcr.io/cloud-builders/docker
+- args:
+  - run
+  - deploy
+  - ai-agent-platform
+  - --image
+  - gcr.io/$PROJECT_ID/ai-agent-platform:$COMMIT_SHA
+  - --region
+  - us-central1
+  - --platform
+  - managed
+  - --allow-unauthenticated
+  entrypoint: gcloud
+  name: gcr.io/google.com/cloudsdktool/cloud-sdk
