@@ -1,16 +1,18 @@
 """
-Vector Memory Store
+Vector Memory Store for AI Agent Platform
 
-Provides semantic search and memory capabilities using vector embeddings.
-Integrates with Supabase pgvector for high-performance similarity search.
+Provides intelligent memory storage and retrieval using vector embeddings
+for semantic search and conversation context management.
 """
 
 import asyncio
 import logging
 import time
+import uuid
 from typing import Dict, Any, List, Optional, Tuple
 from datetime import datetime, timedelta
 import json
+from collections import defaultdict
 
 try:
     from sentence_transformers import SentenceTransformer
@@ -311,6 +313,57 @@ class VectorMemoryStore:
                                metadata: Optional[Dict[str, Any]]) -> bool:
         """Store embedding in Supabase pgvector database."""
         try:
+            # ✅ COMPREHENSIVE UUID VALIDATION AND SANITIZATION
+            def sanitize_uuid(value):
+                """Ensure value is a valid UUID string."""
+                if not value or value in ["true", "false", True, False, "null", "None", None]:
+                    return str(uuid.uuid4())
+                
+                # Convert to string if it's not already
+                value_str = str(value)
+                
+                # Check if it's already a valid UUID format
+                try:
+                    uuid.UUID(value_str)
+                    return value_str
+                except (ValueError, AttributeError):
+                    # Generate new UUID if invalid
+                    return str(uuid.uuid4())
+            
+            # Sanitize UUIDs
+            conversation_id = sanitize_uuid(conversation_id)
+            message_id = sanitize_uuid(message_id)
+            
+            # ✅ CHECK IF CONVERSATION EXISTS - PREVENT FOREIGN KEY VIOLATIONS
+            try:
+                conversation_check = self.supabase_logger.client.table("conversations").select("id").eq("id", conversation_id).execute()
+                
+                if not conversation_check.data:
+                    logger.warning(f"Conversation {conversation_id} not found - creating minimal record")
+                    # Create a minimal conversation record to satisfy foreign key constraint
+                    conversation_data = {
+                        "id": conversation_id,
+                        "user_id": user_id,
+                        "channel_id": metadata.get("channel_id", "memory_system"),
+                        "status": "active"
+                    }
+                    try:
+                        self.supabase_logger.client.table("conversations").insert(conversation_data).execute()
+                        logger.info(f"✅ Created minimal conversation record: {conversation_id}")
+                    except Exception as conv_e:
+                        logger.error(f"Failed to create conversation record: {conv_e}")
+                        # Skip storing this embedding to prevent foreign key violation
+                        return False
+                        
+            except Exception as check_e:
+                logger.error(f"Failed to check conversation existence: {check_e}")
+                return False
+            
+            # Extract channel_id from metadata if available
+            channel_id = None
+            if metadata:
+                channel_id = metadata.get("channel_id")
+            
             data = {
                 "conversation_id": conversation_id,
                 "message_id": message_id,
@@ -319,7 +372,9 @@ class VectorMemoryStore:
                 "content_type": content_type,
                 "topics": topics,
                 "entities": entities,
+                "sentiment": 0.0,  # Default sentiment
                 "user_id": user_id,
+                "channel_id": channel_id,  # Include channel_id from metadata
                 "importance_score": importance_score,
                 "metadata": metadata or {}
             }

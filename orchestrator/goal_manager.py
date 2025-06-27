@@ -22,14 +22,44 @@ class GoalStatus(Enum):
     COMPLETED = "completed"
     FAILED = "failed"
     CANCELLED = "cancelled"
+    
+    def to_database_status(self) -> str:
+        """Map internal status to database-compatible status."""
+        status_mapping = {
+            self.CREATED: "active",
+            self.IN_PROGRESS: "active", 
+            self.PAUSED: "paused",
+            self.COMPLETED: "completed",
+            self.FAILED: "failed",
+            self.CANCELLED: "paused"
+        }
+        return status_mapping.get(self, "active")
 
 class GoalPriority(Enum):
     """Goal priority levels."""
-    LOW = 1
-    MEDIUM = 2
-    HIGH = 3
-    CRITICAL = 4
-    URGENT = 5
+    LOW = "low"
+    MEDIUM = "medium"
+    HIGH = "high"
+    URGENT = "urgent"
+    
+    @classmethod
+    def get_priority_level(cls, priority) -> int:
+        """Get numeric level for priority comparison."""
+        priority_levels = {
+            cls.LOW: 1,
+            cls.MEDIUM: 2,
+            cls.HIGH: 3,
+            cls.URGENT: 4
+        }
+        return priority_levels.get(priority, 1)
+    
+    def __ge__(self, other):
+        """Enable priority comparison using >= operator."""
+        return self.get_priority_level(self) >= self.get_priority_level(other)
+    
+    def __gt__(self, other):
+        """Enable priority comparison using > operator."""
+        return self.get_priority_level(self) > self.get_priority_level(other)
 
 @dataclass
 class GoalCriteria:
@@ -227,13 +257,13 @@ class GoalManager:
         needs_more_agents = (
             completion_percentage < 50 and 
             len(goal.assigned_agents) < 3 and
-            goal.priority.value >= GoalPriority.HIGH.value
+            goal.priority >= GoalPriority.HIGH
         )
         
         needs_human_input = (
             completion_percentage > 80 or 
             len(blocking_issues) > 0 or
-            goal.priority.value >= GoalPriority.CRITICAL.value
+            goal.priority >= GoalPriority.URGENT
         )
         
         # Estimate completion time (simplified)
@@ -390,26 +420,30 @@ class GoalManager:
         
         try:
             goal_data = {
-                "goal_id": goal.goal_id,
+                "id": goal.goal_id,
                 "description": goal.description,
                 "success_criteria": [asdict(c) for c in goal.success_criteria],
-                "status": goal.status.value,
+                "current_status": goal.status.to_database_status(),  # Use mapping function
                 "priority": goal.priority.value,
+                "created_by": goal.created_by,  # Add the required field
                 "assigned_agents": goal.assigned_agents,
                 "progress_percentage": goal.progress_percentage,
-                "started_at": goal.started_at.isoformat() if goal.started_at else None,
-                "completed_at": goal.completed_at.isoformat() if goal.completed_at else None,
-                "deadline": goal.deadline.isoformat() if goal.deadline else None,
-                "metadata": goal.metadata,
-                "child_goal_ids": goal.child_goal_ids,
+                "metadata": {
+                    **(goal.metadata or {}),
+                    "internal_status": goal.status.value,  # Store internal status in metadata
+                    "started_at": goal.started_at.isoformat() if goal.started_at else None,
+                    "completed_at": goal.completed_at.isoformat() if goal.completed_at else None,
+                    "deadline": goal.deadline.isoformat() if goal.deadline else None,
+                    "child_goal_ids": goal.child_goal_ids
+                },
                 "updated_at": datetime.utcnow().isoformat()
             }
             
             # Upsert the goal
-            existing = self.db_logger.client.table("goals").select("goal_id").eq("goal_id", goal.goal_id).execute()
+            existing = self.db_logger.client.table("goals").select("id").eq("id", goal.goal_id).execute()
             
             if existing.data:
-                self.db_logger.client.table("goals").update(goal_data).eq("goal_id", goal.goal_id).execute()
+                self.db_logger.client.table("goals").update(goal_data).eq("id", goal.goal_id).execute()
             else:
                 goal_data["created_at"] = goal.created_at.isoformat()
                 self.db_logger.client.table("goals").insert(goal_data).execute()

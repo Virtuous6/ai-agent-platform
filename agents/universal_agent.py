@@ -646,7 +646,10 @@ Provide improvement analysis for the {self.specialty} specialist:"""
                 content=message,
                 user_id=context.get("user_id", "unknown"),
                 content_type="message",
-                metadata={"agent_specialty": self.specialty}
+                metadata={
+                    "agent_specialty": self.specialty,
+                    "channel_id": context.get("channel_id")
+                }
             )
             
             # Store agent response
@@ -655,8 +658,12 @@ Provide improvement analysis for the {self.specialty} specialist:"""
                 message_id=str(uuid.uuid4()),
                 content=response,
                 user_id=context.get("user_id", "unknown"),
-                content_type="agent_response",
-                metadata={"agent_id": self.agent_id, "specialty": self.specialty}
+                content_type="response",
+                metadata={
+                    "agent_id": self.agent_id,
+                    "specialty": self.specialty,
+                    "channel_id": context.get("channel_id")
+                }
             )
             
         except Exception as e:

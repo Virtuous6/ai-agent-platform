@@ -597,7 +597,7 @@ Analyze if tools would enhance the technical response:"""
             return
         try:
             await self.vector_store.store_conversation_memory(conversation_id=conversation_id or str(uuid.uuid4()), message_id=message_id or str(uuid.uuid4()), content=message, user_id=context.get("user_id", "unknown"), content_type="message", metadata={"agent_type": "technical"})
-            await self.vector_store.store_conversation_memory(conversation_id=conversation_id or str(uuid.uuid4()), message_id=str(uuid.uuid4()), content=response, user_id=context.get("user_id", "unknown"), content_type="agent_response", metadata={"agent_id": self.agent_id, "agent_type": "technical"})
+            await self.vector_store.store_conversation_memory(conversation_id=conversation_id or str(uuid.uuid4()), message_id=str(uuid.uuid4()), content=response, user_id=context.get("user_id", "unknown"), content_type="response", metadata={"agent_id": self.agent_id, "agent_type": "technical"})
         except Exception as e:
             logger.warning(f"Failed to store memory: {e}")
     

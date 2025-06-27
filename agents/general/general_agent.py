@@ -594,7 +594,7 @@ Analyze this message for escalation needs:"""
                 message_id=str(uuid.uuid4()),
                 content=response,
                 user_id=context.get("user_id", "unknown"),
-                content_type="agent_response",
+                content_type="response",
                 metadata={"agent_id": self.agent_id, "agent_type": "general"}
             )
             
