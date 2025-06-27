@@ -10,7 +10,7 @@ import os
 import logging
 import json
 import base64
-from typing import Dict, Optional, Any
+from typing import Dict, List, Optional, Any
 from datetime import datetime
 from dataclasses import dataclass
 

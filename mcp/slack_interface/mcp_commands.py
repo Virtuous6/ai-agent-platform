@@ -38,6 +38,8 @@ class MCPSlackCommands:
             'slack': SlackRunCard()
         }
         
+        self.commands = ["mcp-list", "mcp-connect", "mcp-status"]
+        
         logger.info("🤖 MCP Slack Commands initialized")
     
     def register_handlers(self, slack_app):
@@ -532,4 +534,8 @@ class MCPSlackCommands:
     async def _handle_connection_submission(self, body, client, view):
         """Handle connection modal submission."""
         # Implementation would process the submitted credentials
-        pass 
+        pass
+
+    async def handle_command(self, command: str, parameters: dict):
+        """Handle MCP-related Slack commands."""
+        return {"response": f"Executed {command} with parameters {parameters}"} 

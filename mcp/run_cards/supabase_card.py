@@ -412,4 +412,16 @@ Perfect for: Data analysis, user management, report generation, and real-time qu
                     }
                 }
             }
+        }
+
+    def get_config_template(self):
+        """Get configuration template for Supabase connection."""
+        return {
+            "mcp_type": "supabase",
+            "display_name": "Supabase Database",
+            "description": "Connect to Supabase database",
+            "config": {
+                "url": "https://your-project.supabase.co",
+                "service_role_key": "your-service-role-key"
+            }
         } 

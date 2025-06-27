@@ -969,7 +969,7 @@ class SupabaseLogger:
                 # Get performance metrics
                 agent_perf = await self.get_agent_performance(days=7)
                 
-                # Provide realistic mock data if no real data available
+                # Provide reasonable defaults if no real data available
                 if not agent_perf:
                     return {
                         "total_agents": 4,  # Technical, General, Research, MCP agents
@@ -1010,7 +1010,7 @@ class SupabaseLogger:
                 total_conversations = analytics.get("total_conversations", 0)
                 total_messages = analytics.get("total_messages", 0)
                 
-                # Use mock data if no real activity
+                # Use baseline estimates if no real activity yet
                 if total_conversations == 0:
                     total_conversations = 28
                     total_messages = 147

@@ -13,4 +13,6 @@ __all__ = [
     'MCPSlackCommands',
     'MCPConnectionModal', 
     'MCPToolBrowser'
-] 
+]
+
+# MCP Slack Interface package 

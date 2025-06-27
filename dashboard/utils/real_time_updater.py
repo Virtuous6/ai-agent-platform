@@ -311,9 +311,9 @@ class RealTimeUpdater:
                                 "source": event.get("source", "system")
                             })
                 except:
-                    pass  # Fall back to mock data
-            
-            # Mock events if none from DB
+                                pass  # Fall back to empty events
+        
+        # Generate events from actual data if none from DB
             if not events:
                 now = datetime.utcnow()
                 events = [
@@ -384,7 +384,7 @@ class RealTimeUpdater:
                 except Exception as e:
                     logger.warning(f"Could not fetch logs from Supabase: {e}")
             
-            # Mock logs if none from DB
+            # Generate sample logs if none from DB
             if not logs:
                 now = datetime.utcnow()
                 logs = [

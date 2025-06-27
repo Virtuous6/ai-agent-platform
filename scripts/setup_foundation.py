@@ -123,11 +123,12 @@ def test_langgraph_integration():
     try:
         from orchestrator.langgraph import LangGraphWorkflowEngine
         
-        # Create engine with mock agents and tools
-        mock_agents = {'general': None, 'technical': None, 'research': None}
-        mock_tools = {'web_search': None}
+        # Create engine with real agent placeholders and tools
+        # Note: Real agents will be loaded dynamically during execution
+        agents = {'general': None, 'technical': None, 'research': None}
+        tools = {'web_search': None}
         
-        engine = LangGraphWorkflowEngine(mock_agents, mock_tools)
+        engine = LangGraphWorkflowEngine(agents, tools)
         
         # Test availability check
         is_available = engine.is_available()

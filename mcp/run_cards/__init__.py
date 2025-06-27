@@ -15,4 +15,6 @@ __all__ = [
     'GitHubRunCard',
     'SlackRunCard', 
     'CustomRunCard'
-] 
+]
+
+# MCP Run Cards package 
