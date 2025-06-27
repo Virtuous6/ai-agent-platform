@@ -101,6 +101,7 @@ class UniversalAgent:
         self.max_tokens = max_tokens
         self.agent_id = agent_id or f"universal_{specialty.lower().replace(' ', '_')}"
         self.tools = tools or []
+        self.adaptive_mode = True  # Enable dynamic self-tuning by default
         
         # Initialize LLMs
         self.llm = ChatOpenAI(
@@ -262,6 +263,9 @@ Provide improvement analysis for the {self.specialty} specialist:"""
         run_id = str(uuid.uuid4())
         
         try:
+            # Restore working memory
+            await self.restore_working_memory()
+            
             logger.info(f"Universal Agent '{self.specialty}' processing: '{message[:50]}...'")
             
             # Start workflow tracking
@@ -281,25 +285,67 @@ Provide improvement analysis for the {self.specialty} specialist:"""
             # Execute tools if available
             tool_results = await self._execute_tools(message, context)
             
-            # Generate specialist response
-            try:
-                with get_openai_callback() as cb:
+            # Generate specialist response with optional adaptive processing
+            if self.adaptive_mode:
+                try:
+                    # Use adaptive processing for better performance
+                    adaptive_result = await self.adapt_to_task(message, context)
+                    response = adaptive_result.get('response', '')
+                    tokens_used = adaptive_result.get('tokens_used', 0)
+                    input_tokens = 0  # Would need to extract from adaptive result
+                    output_tokens = 0  # Would need to extract from adaptive result
+                    cost = adaptive_result.get('cost', 0.0)
+                    adaptive_metadata = {
+                        'adaptation_used': adaptive_result.get('adaptation_used', False),
+                        'optimal_params': adaptive_result.get('optimal_params', {}),
+                        'task_analysis': adaptive_result.get('task_analysis', {}),
+                        'quality_score': adaptive_result.get('quality_score', 0.0)
+                    }
+                except Exception as e:
+                    logger.warning(f"Adaptive processing failed, falling back to standard: {e}")
+                    # Fallback to standard processing
+                    try:
+                        with get_openai_callback() as cb:
+                            response = await self._generate_specialist_response(
+                                message, context, history_context, memory_context, tool_results
+                            )
+                        tokens_used = cb.total_tokens
+                        input_tokens = cb.prompt_tokens
+                        output_tokens = cb.completion_tokens
+                        cost = cb.total_cost
+                        adaptive_metadata = {'adaptation_used': False, 'fallback_reason': str(e)}
+                    except Exception as e2:
+                        logger.warning(f"OpenAI callback failed: {e2}")
+                        response = await self._generate_specialist_response(
+                            message, context, history_context, memory_context, tool_results
+                        )
+                        tokens_used = 0
+                        input_tokens = 0
+                        output_tokens = 0
+                        cost = 0.0
+                        adaptive_metadata = {'adaptation_used': False, 'fallback_reason': str(e)}
+            else:
+                # Standard processing without adaptation
+                try:
+                    with get_openai_callback() as cb:
+                        response = await self._generate_specialist_response(
+                            message, context, history_context, memory_context, tool_results
+                        )
+                    tokens_used = cb.total_tokens
+                    input_tokens = cb.prompt_tokens
+                    output_tokens = cb.completion_tokens
+                    cost = cb.total_cost
+                    adaptive_metadata = {'adaptation_used': False}
+                except Exception as e:
+                    logger.warning(f"OpenAI callback failed, proceeding without tracking: {e}")
                     response = await self._generate_specialist_response(
                         message, context, history_context, memory_context, tool_results
                     )
-                tokens_used = cb.total_tokens
-                input_tokens = cb.prompt_tokens
-                output_tokens = cb.completion_tokens
-                cost = cb.total_cost
-            except Exception as e:
-                logger.warning(f"OpenAI callback failed, proceeding without tracking: {e}")
-                response = await self._generate_specialist_response(
-                    message, context, history_context, memory_context, tool_results
-                )
-                tokens_used = 0
-                input_tokens = 0
-                output_tokens = 0
-                cost = 0.0
+                    tokens_used = 0
+                    input_tokens = 0
+                    output_tokens = 0
+                    cost = 0.0
+                    adaptive_metadata = {'adaptation_used': False}
             
             # Calculate processing time
             processing_time_ms = (datetime.utcnow() - start_time).total_seconds() * 1000
@@ -349,6 +395,9 @@ Provide improvement analysis for the {self.specialty} specialist:"""
             }
             self.conversation_history.append(interaction_log)
             
+            # Save working memory for next interaction
+            await self.save_working_memory()
+            
             return {
                 "response": response,
                 "agent_id": self.agent_id,
@@ -373,7 +422,8 @@ Provide improvement analysis for the {self.specialty} specialist:"""
                     "specialty": self.specialty,
                     "tools_used": [tool.name for tool in self.tools if tool.enabled],
                     "performance_score": self.performance_metrics.get("average_quality_score", 0.0),
-                    "platform_integrated": True
+                    "platform_integrated": True,
+                    "adaptive_processing": adaptive_metadata
                 }
             }
             
@@ -596,7 +646,7 @@ Provide improvement analysis for the {self.specialty} specialist:"""
             if similar_memories:
                 context_parts = []
                 for memory in similar_memories:
-                    context_parts.append(f"- {memory.get('content_summary', '')[:100]}")
+                    context_parts.append(f"- {memory.get('content_summary', '')}")  # Remove [:100]
                 return f"Relevant context from previous conversations:\n" + "\n".join(context_parts)
             
         except Exception as e:
@@ -748,6 +798,361 @@ Provide improvement analysis for the {self.specialty} specialist:"""
             
         except Exception as e:
             logger.error(f"Failed to process feedback: {e}")
+    
+    async def persist_learning(self, pattern_type: str, pattern_data: Dict):
+        """Persist learned patterns to vector store for all agents to access."""
+        if self.vector_store:
+            embedding = await self.vector_store.generate_embedding(
+                f"{pattern_type}: {json.dumps(pattern_data)}"
+            )
+            await self.vector_store.store_memory(
+                content=json.dumps(pattern_data),
+                metadata={
+                    'type': 'learned_pattern',
+                    'pattern_type': pattern_type,
+                    'agent_specialty': self.specialty,
+                    'confidence': pattern_data.get('confidence', 0.5)
+                }
+            )
+
+    async def recall_relevant_patterns(self, context: str) -> List[Dict]:
+        """Recall patterns learned by any agent relevant to current context."""
+        if self.vector_store:
+            return await self.vector_store.search_similar_memories(
+                query=context,
+                content_types=['learned_pattern'],
+                limit=5
+            )
+        return []
+    
+    async def save_working_memory(self):
+        """Save my current reasoning state between interactions."""
+        if not hasattr(self, '_working_memory'):
+            self._working_memory = {
+                'last_task': None,
+                'reasoning_chain': [],
+                'learned_approaches': {},
+                'conversation_flow': []
+            }
+        
+        # Update conversation flow
+        if self.conversation_history:
+            recent = self.conversation_history[-1]
+            self._working_memory['last_task'] = recent.get('message_preview', '')
+            self._working_memory['conversation_flow'].append({
+                'timestamp': datetime.utcnow().isoformat(),
+                'message': recent.get('message_preview', ''),
+                'specialty_used': self.specialty
+            })
+        
+        # Save to vector store
+        await self.persist_learning('working_memory', {
+            'agent_id': self.agent_id,
+            'specialty': self.specialty,
+            'memory_state': self._working_memory,
+            'last_updated': datetime.utcnow().isoformat()
+        })
+
+    async def restore_working_memory(self):
+        """Restore my previous reasoning state."""
+        memories = await self.recall_relevant_patterns(
+            f"working_memory agent_id:{self.agent_id}"
+        )
+        if memories and len(memories) > 0:
+            try:
+                memory_content = json.loads(memories[0].get('content', '{}'))
+                self._working_memory = memory_content.get('memory_state', {})
+                logger.info(f"Restored working memory for {self.specialty}")
+            except:
+                self._working_memory = {}
+    
+    async def adapt_to_task(self, message: str, context: Dict[str, Any]) -> Dict[str, Any]:
+        """Analyze the task and adapt parameters dynamically for optimal performance."""
+        try:
+            logger.info(f"Universal Agent '{self.specialty}' adapting to task: '{message[:50]}...'")
+            
+            # Quick analysis of what this task needs
+            task_analysis = await self._analyze_task_requirements(message, context)
+            
+            # Recall what worked for similar tasks
+            similar_patterns = await self.recall_relevant_patterns(
+                f"task_parameters: {task_analysis['task_type']}"
+            )
+            
+            # Start with base parameters
+            optimal_params = {
+                'temperature': self.temperature,
+                'max_tokens': self.max_tokens,
+                'model': self.model_name
+            }
+            
+            # Adjust based on task analysis
+            if task_analysis.get('creativity_needed', 0.0) > 0.7:
+                optimal_params['temperature'] = min(0.9, task_analysis['creativity_needed'])
+            elif task_analysis.get('precision_needed', 0.0) > 0.7:
+                optimal_params['temperature'] = 0.1
+            
+            if task_analysis.get('complexity_score', 0.0) > 0.8:
+                optimal_params['max_tokens'] = min(2000, int(task_analysis['complexity_score'] * 2000))
+                optimal_params['model'] = 'gpt-4' if task_analysis.get('reasoning_complexity', 0.0) > 0.8 else 'gpt-3.5-turbo'
+            
+            # Learn from similar patterns
+            if similar_patterns:
+                pattern_params = self._extract_optimal_params_from_patterns(similar_patterns)
+                if pattern_params:
+                    # Weight learned patterns
+                    optimal_params.update(pattern_params)
+            
+            # Generate response with optimal parameters
+            result = await self._generate_adaptive_response(message, context, optimal_params)
+            
+            # Calculate quality score (simplified)
+            quality_score = self._calculate_response_quality(result, task_analysis)
+            
+            # Learn from the outcome if successful
+            if result.get('success', True) and quality_score > 0.7:
+                await self.persist_learning('task_parameters', {
+                    'task_type': task_analysis['task_type'],
+                    'parameters': optimal_params,
+                    'outcome_quality': quality_score,
+                    'message_length': len(message),
+                    'response_length': len(result.get('response', '')),
+                    'specialty': self.specialty,
+                    'confidence': 0.8
+                })
+                logger.info(f"Learned optimal parameters for {task_analysis['task_type']} tasks")
+            
+            # Add adaptation metadata
+            result['adaptation_used'] = True
+            result['optimal_params'] = optimal_params
+            result['task_analysis'] = task_analysis
+            result['quality_score'] = quality_score
+            
+            return result
+            
+        except Exception as e:
+            logger.error(f"Error in adaptive task processing: {e}")
+            
+            # Learn from this failure
+            await self.persist_learning('task_failure', {
+                'error': str(e),
+                'error_type': type(e).__name__,
+                'task_preview': message[:200],
+                'attempted_params': optimal_params if 'optimal_params' in locals() else {},
+                'specialty': self.specialty,
+                'timestamp': datetime.utcnow().isoformat()
+            })
+            
+            # Fallback to standard processing
+            return await self.process_message(message, context)
+    
+    async def _analyze_task_requirements(self, message: str, context: Dict[str, Any]) -> Dict[str, Any]:
+        """Analyze the incoming task to determine optimal parameters."""
+        try:
+            # Create a lightweight analysis prompt
+            analysis_prompt = f"""Analyze this task to determine optimal LLM parameters:
+
+Task: "{message}"
+Specialty: {self.specialty}
+
+Return JSON with:
+{{
+    "task_type": "string (code_generation|creative_writing|analysis|brainstorming|problem_solving|qa)",
+    "creativity_needed": float (0.0-1.0),
+    "precision_needed": float (0.0-1.0), 
+    "complexity_score": float (0.0-1.0),
+    "reasoning_complexity": float (0.0-1.0),
+    "expected_length": "short|medium|long"
+}}
+
+Analysis:"""
+
+            # Use analysis LLM for quick evaluation
+            response = await self.analysis_llm.ainvoke(analysis_prompt)
+            
+            # Parse JSON response
+            analysis_text = response.content.strip()
+            if analysis_text.startswith("```json"):
+                analysis_text = analysis_text.strip("```json").strip("```").strip()
+            elif analysis_text.startswith("```"):
+                analysis_text = analysis_text.strip("```").strip()
+            
+            analysis = json.loads(analysis_text)
+            
+            # Add message-based heuristics
+            message_lower = message.lower()
+            
+            # Detect code-related tasks
+            if any(word in message_lower for word in ['code', 'function', 'debug', 'program', 'script']):
+                analysis['precision_needed'] = max(analysis.get('precision_needed', 0.0), 0.8)
+                analysis['task_type'] = 'code_generation'
+            
+            # Detect creative tasks
+            if any(word in message_lower for word in ['creative', 'brainstorm', 'idea', 'story', 'write']):
+                analysis['creativity_needed'] = max(analysis.get('creativity_needed', 0.0), 0.8)
+                analysis['task_type'] = 'creative_writing'
+            
+            # Detect complex analysis
+            if any(word in message_lower for word in ['analyze', 'explain', 'compare', 'evaluate']):
+                analysis['complexity_score'] = max(analysis.get('complexity_score', 0.0), 0.7)
+                analysis['reasoning_complexity'] = max(analysis.get('reasoning_complexity', 0.0), 0.6)
+                analysis['task_type'] = 'analysis'
+            
+            return analysis
+            
+        except Exception as e:
+            logger.warning(f"Task analysis failed, using defaults: {e}")
+            return {
+                'task_type': 'general',
+                'creativity_needed': 0.4,
+                'precision_needed': 0.5,
+                'complexity_score': 0.5,
+                'reasoning_complexity': 0.4,
+                'expected_length': 'medium'
+            }
+    
+    def _extract_optimal_params_from_patterns(self, patterns: List[Dict]) -> Dict[str, Any]:
+        """Extract optimal parameters from learned patterns."""
+        if not patterns:
+            return {}
+        
+        # Weight patterns by quality and recency
+        weighted_params = {'temperature': [], 'max_tokens': [], 'model': []}
+        
+        for pattern in patterns:
+            try:
+                pattern_data = json.loads(pattern.get('content', '{}'))
+                if 'parameters' in pattern_data and 'outcome_quality' in pattern_data:
+                    quality_weight = pattern_data['outcome_quality']
+                    params = pattern_data['parameters']
+                    
+                    if 'temperature' in params:
+                        weighted_params['temperature'].append((params['temperature'], quality_weight))
+                    if 'max_tokens' in params:
+                        weighted_params['max_tokens'].append((params['max_tokens'], quality_weight))
+                    if 'model' in params:
+                        weighted_params['model'].append((params['model'], quality_weight))
+                        
+            except Exception as e:
+                logger.warning(f"Error extracting pattern params: {e}")
+                continue
+        
+        # Calculate weighted averages
+        optimal = {}
+        
+        if weighted_params['temperature']:
+            total_weight = sum(weight for _, weight in weighted_params['temperature'])
+            if total_weight > 0:
+                optimal['temperature'] = sum(temp * weight for temp, weight in weighted_params['temperature']) / total_weight
+        
+        if weighted_params['max_tokens']:
+            total_weight = sum(weight for _, weight in weighted_params['max_tokens'])
+            if total_weight > 0:
+                optimal['max_tokens'] = int(sum(tokens * weight for tokens, weight in weighted_params['max_tokens']) / total_weight)
+        
+        if weighted_params['model']:
+            # Use most frequently successful model
+            model_scores = {}
+            for model, weight in weighted_params['model']:
+                model_scores[model] = model_scores.get(model, 0) + weight
+            if model_scores:
+                optimal['model'] = max(model_scores.items(), key=lambda x: x[1])[0]
+        
+        return optimal
+    
+    async def _generate_adaptive_response(self, message: str, context: Dict[str, Any], 
+                                        optimal_params: Dict[str, Any]) -> Dict[str, Any]:
+        """Generate response using dynamically optimized parameters."""
+        try:
+            # Create temporary LLM with optimal parameters
+            adaptive_llm = ChatOpenAI(
+                model=optimal_params.get('model', self.model_name),
+                temperature=optimal_params.get('temperature', self.temperature),
+                openai_api_key=os.getenv("OPENAI_API_KEY"),
+                max_tokens=optimal_params.get('max_tokens', self.max_tokens),
+            )
+            
+            # Use the same context gathering as standard processing
+            memory_context = await self._get_memory_context(message, context)
+            history_context = self._format_conversation_history(context.get("conversation_history", []))
+            tool_results = await self._execute_tools(message, context)
+            
+            # Generate response with adaptive LLM
+            main_chain = self.main_prompt | adaptive_llm
+            
+            enhanced_context = self._format_context(context)
+            if tool_results:
+                enhanced_context += f"\nTool Results: {json.dumps(tool_results, indent=2)}"
+            
+            with get_openai_callback() as cb:
+                response = await main_chain.ainvoke({
+                    "message": message,
+                    "context": enhanced_context,
+                    "history": history_context,
+                    "memory_context": memory_context
+                })
+                tokens_used = cb.total_tokens
+                cost = cb.total_cost
+            
+            return {
+                'response': response.content,
+                'success': True,
+                'tokens_used': tokens_used,
+                'cost': cost,
+                'model_used': optimal_params.get('model', self.model_name),
+                'parameters_used': optimal_params
+            }
+            
+        except Exception as e:
+            logger.error(f"Adaptive response generation failed: {e}")
+            return {
+                'response': f"I apologize, but I encountered an issue while adapting to your {self.specialty} request.",
+                'success': False,
+                'error': str(e)
+            }
+    
+    def _calculate_response_quality(self, result: Dict[str, Any], task_analysis: Dict[str, Any]) -> float:
+        """Calculate quality score for the response (simplified heuristic)."""
+        try:
+            if not result.get('success', False):
+                return 0.0
+            
+            response = result.get('response', '')
+            
+            # Basic quality heuristics
+            quality_score = 0.5  # Base score
+            
+            # Length appropriateness
+            expected_length = task_analysis.get('expected_length', 'medium')
+            response_length = len(response)
+            
+            if expected_length == 'short' and 50 <= response_length <= 300:
+                quality_score += 0.2
+            elif expected_length == 'medium' and 200 <= response_length <= 800:
+                quality_score += 0.2
+            elif expected_length == 'long' and response_length >= 500:
+                quality_score += 0.2
+            
+            # Task type specific checks
+            task_type = task_analysis.get('task_type', 'general')
+            
+            if task_type == 'code_generation' and any(marker in response for marker in ['```', 'def ', 'function', 'class ']):
+                quality_score += 0.2
+            elif task_type == 'analysis' and any(word in response.lower() for word in ['because', 'therefore', 'analysis', 'conclusion']):
+                quality_score += 0.2
+            elif task_type == 'creative_writing' and response_length > 200:
+                quality_score += 0.2
+            
+            # Cost efficiency
+            tokens_used = result.get('tokens_used', 0)
+            if tokens_used > 0 and tokens_used < 1000:  # Efficient token usage
+                quality_score += 0.1
+            
+            return min(1.0, quality_score)
+            
+        except Exception as e:
+            logger.warning(f"Quality calculation failed: {e}")
+            return 0.5
     
     def get_agent_stats(self) -> Dict[str, Any]:
         """Get comprehensive statistics about this agent instance."""
