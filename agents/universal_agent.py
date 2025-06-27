@@ -28,6 +28,10 @@ from memory.vector_store import VectorMemoryStore
 from events.event_bus import EventBus, EventType
 from orchestrator.workflow_tracker import WorkflowTracker
 
+# MCP integrations (will be imported conditionally to avoid circular imports)
+# from mcp.mcp_discovery_engine import MCPDiscoveryEngine
+# from mcp.dynamic_tool_builder import DynamicToolBuilder
+
 logger = logging.getLogger(__name__)
 
 class SpecialtyType(Enum):
@@ -73,7 +77,11 @@ class UniversalAgent:
                  supabase_logger: Optional[SupabaseLogger] = None,
                  vector_store: Optional[VectorMemoryStore] = None,
                  event_bus: Optional[EventBus] = None,
-                 workflow_tracker: Optional[WorkflowTracker] = None):
+                 workflow_tracker: Optional[WorkflowTracker] = None,
+                 # MCP integrations
+                 mcp_discovery_engine = None,
+                 dynamic_tool_builder = None,
+                 mcp_tool_registry = None):
         """
         Initialize the Universal Agent with platform integrations.
         
@@ -91,6 +99,11 @@ class UniversalAgent:
             vector_store: Memory/context integration
             event_bus: Event-driven communication
             workflow_tracker: Workflow analysis integration
+            
+            # MCP integrations (Model Context Protocol)
+            mcp_discovery_engine: Engine to find MCP solutions for missing capabilities
+            dynamic_tool_builder: Builder for creating new tools when MCPs aren't available
+            mcp_tool_registry: Registry of available MCP tools
         """
         
         # Core configuration
@@ -125,6 +138,37 @@ class UniversalAgent:
         self.workflow_tracker = workflow_tracker
         self.tool_registry = {}  # For tools registry integration
         
+        # MCP integrations for tool discovery and building
+        self.mcp_discovery_engine = mcp_discovery_engine
+        self.dynamic_tool_builder = dynamic_tool_builder
+        self.mcp_tool_registry = mcp_tool_registry
+        
+        # Track MCP tool requests and gaps
+        self.mcp_tool_requests: Dict[str, str] = {}  # gap_id -> request_id
+        self.pending_mcp_tasks: List[Dict[str, Any]] = []
+        
+        # Token management and cost optimization
+        self.token_management = {
+            'max_memory_tokens': 500,          # Budget for memory context
+            'max_working_memory_tokens': 300,  # Budget for working memory  
+            'max_history_tokens': 200,         # Budget for conversation history
+            'max_tool_results_tokens': 200,    # Budget for tool outputs
+            'similarity_threshold': 0.8,       # Higher threshold = more relevant memories
+            'max_memories_to_load': 2,         # Limit number of memories loaded
+            'enable_token_optimization': True,  # Enable smart token management
+            'context_compression': True,        # Enable context compression
+            'adaptive_budget': True             # Adjust budgets based on task complexity
+        }
+        
+        # Context window limits by model
+        self.context_windows = {
+            'gpt-3.5-turbo': 4096,
+            'gpt-3.5-turbo-0125': 4096,
+            'gpt-4': 8192,
+            'gpt-4-0125-preview': 8192,
+            'gpt-4-32k': 32768
+        }
+        
         # Initialize prompt templates
         self.main_prompt = self._create_main_prompt()
         self.improvement_prompt = self._create_improvement_prompt()
@@ -145,7 +189,8 @@ class UniversalAgent:
         if self.event_bus:
             asyncio.create_task(self._register_event_handlers())
         
-        logger.info(f"Universal Agent '{self.specialty}' initialized with full platform integration")
+        mcp_status = "with MCP-first tool discovery" if self.mcp_discovery_engine else "without MCP integration"
+        logger.info(f"Universal Agent '{self.specialty}' initialized with full platform integration {mcp_status}")
     
     def _create_main_prompt(self) -> ChatPromptTemplate:
         """Create the main conversation prompt template based on specialty."""
@@ -268,12 +313,24 @@ Provide improvement analysis for the {self.specialty} specialist:"""
             
             logger.info(f"Universal Agent '{self.specialty}' processing: '{message[:50]}...'")
             
+            # Calculate dynamic context budget if optimization enabled
+            if self.token_management['enable_token_optimization']:
+                context_budget = self._calculate_context_budget(message)
+                logger.debug(f"Context budget: {sum(context_budget.values())} tokens allocated")
+                
+                # Update token management limits dynamically
+                self.token_management['max_memory_tokens'] = context_budget['memory_context']
+                self.token_management['max_working_memory_tokens'] = context_budget['working_memory']
+                self.token_management['max_history_tokens'] = context_budget['history']
+                self.token_management['max_tool_results_tokens'] = context_budget['tool_results']
+            
             # Start workflow tracking
             if self.workflow_tracker:
                 await self.workflow_tracker.start_workflow(run_id, {
                     "agent_id": self.agent_id,
                     "specialty": self.specialty,
-                    "message_preview": message[:100]
+                    "message_preview": message[:100],
+                    "token_optimization": self.token_management['enable_token_optimization']
                 })
             
             # Retrieve relevant memory context
@@ -350,6 +407,41 @@ Provide improvement analysis for the {self.specialty} specialist:"""
             # Calculate processing time
             processing_time_ms = (datetime.utcnow() - start_time).total_seconds() * 1000
             
+            # Token usage monitoring and alerting
+            if self.token_management['enable_token_optimization']:
+                context_size = len(memory_context + history_context) // 4
+                total_context_tokens = context_size + tokens_used
+                
+                # Log detailed token breakdown
+                logger.info(f"Token usage breakdown for {self.specialty}:")
+                logger.info(f"  Input tokens: {input_tokens}")
+                logger.info(f"  Output tokens: {output_tokens}")
+                logger.info(f"  Memory context: ~{len(memory_context) // 4} tokens")
+                logger.info(f"  History context: ~{len(history_context) // 4} tokens")
+                logger.info(f"  Total tokens: {tokens_used}")
+                logger.info(f"  Cost: ${cost:.4f}")
+                
+                # Alert on high usage
+                context_window = self.context_windows.get(self.model_name, 4096)
+                if tokens_used > context_window * 0.8:
+                    logger.warning(f"🚨 HIGH TOKEN USAGE: {tokens_used}/{context_window} tokens ({tokens_used/context_window:.1%})")
+                    logger.warning(f"   Consider enabling more aggressive optimization for {self.specialty}")
+                
+                # Alert on high cost
+                cost_threshold = 0.01  # $0.01 per request
+                if cost > cost_threshold:
+                    logger.warning(f"💰 HIGH COST ALERT: ${cost:.4f} for single request")
+                
+                # Update performance metrics with cost efficiency
+                cost_per_token = cost / max(1, tokens_used)
+                if hasattr(self, 'cost_efficiency_history'):
+                    self.cost_efficiency_history.append(cost_per_token)
+                else:
+                    self.cost_efficiency_history = [cost_per_token]
+                
+                # Keep only recent cost history
+                self.cost_efficiency_history = self.cost_efficiency_history[-10:]
+            
             # Log to Supabase
             conversation_id = context.get("conversation_id")
             message_id = await self._log_to_supabase(
@@ -372,7 +464,10 @@ Provide improvement analysis for the {self.specialty} specialist:"""
                     "success": True,
                     "response_length": len(response),
                     "tokens_used": tokens_used,
-                    "cost": cost
+                    "cost": cost,
+                    "adaptive_params": adaptive_metadata,
+                    "task_analysis": adaptive_metadata.get('task_analysis') if 'adaptive_metadata' in locals() else None,
+                    "quality_score": adaptive_metadata.get('quality_score') if 'adaptive_metadata' in locals() else None
                 })
             
             # Log the interaction
@@ -395,6 +490,28 @@ Provide improvement analysis for the {self.specialty} specialist:"""
             }
             self.conversation_history.append(interaction_log)
             
+            # Check for MCP tool gaps if confidence is low
+            confidence = 0.9  # Default confidence
+            mcp_gap_detected = False
+            mcp_request_info = {}
+            
+            # MCP-FIRST APPROACH: Check for tool gaps when confidence is low
+            if confidence < 0.7 and self.dynamic_tool_builder:
+                logger.info(f"🔍 Low confidence ({confidence:.2f}) - checking for MCP tool gaps...")
+                
+                mcp_gap = await self._detect_mcp_tool_gap(message, response, context, confidence)
+                if mcp_gap:
+                    mcp_gap_detected = True
+                    mcp_request_info = await self._handle_mcp_tool_gap(mcp_gap, message, context)
+                    
+                    # Update response to inform user about MCP tool request
+                    if mcp_request_info.get('mcp_solutions_found', 0) > 0:
+                        response = mcp_request_info.get('enhanced_response', response)
+                        confidence = 0.8  # Higher confidence when we have MCP solutions
+                    else:
+                        response = mcp_request_info.get('tool_building_response', response)
+                        confidence = 0.6  # Moderate confidence for custom tool building
+            
             # Save working memory for next interaction
             await self.save_working_memory()
             
@@ -403,7 +520,7 @@ Provide improvement analysis for the {self.specialty} specialist:"""
                 "agent_id": self.agent_id,
                 "specialty": self.specialty,
                 "conversation_type": "specialist",
-                "confidence": 0.9,
+                "confidence": confidence,
                 "tokens_used": tokens_used,
                 "input_tokens": input_tokens,
                 "output_tokens": output_tokens,
@@ -423,7 +540,14 @@ Provide improvement analysis for the {self.specialty} specialist:"""
                     "tools_used": [tool.name for tool in self.tools if tool.enabled],
                     "performance_score": self.performance_metrics.get("average_quality_score", 0.0),
                     "platform_integrated": True,
-                    "adaptive_processing": adaptive_metadata
+                    "adaptive_processing": adaptive_metadata,
+                    "mcp_integration": {
+                        "mcp_discovery_available": bool(self.mcp_discovery_engine),
+                        "tool_builder_available": bool(self.dynamic_tool_builder),
+                        "gap_detected": mcp_gap_detected,
+                        "pending_mcp_tasks": len(self.pending_mcp_tasks),
+                        "mcp_request_info": mcp_request_info
+                    }
                 }
             }
             
@@ -462,6 +586,202 @@ Provide improvement analysis for the {self.specialty} specialist:"""
                 "platform_integrated": True
             }
     
+    async def _detect_mcp_tool_gap(self, message: str, response: str, 
+                                 context: Dict[str, Any], confidence: float) -> Optional[Any]:
+        """
+        Detect if the agent needs an MCP tool it doesn't have.
+        
+        MCP-FIRST APPROACH: Prioritizes finding MCP solutions before building custom tools.
+        
+        Returns ToolGap object if gap detected, None otherwise.
+        """
+        if confidence >= 0.7:  # Good confidence, no gap
+            return None
+        
+        try:
+            # Check if we have MCP tool builder
+            if not self.dynamic_tool_builder:
+                return None
+            
+            # Use dynamic tool builder to detect gap (it has MCP-first logic)
+            gap = await self.dynamic_tool_builder.detect_tool_gap(
+                agent_id=self.agent_id,
+                message=message,
+                context={
+                    **context,
+                    "low_confidence_response": response,
+                    "confidence_score": confidence,
+                    "agent_specialty": self.specialty,
+                    "detection_source": "universal_agent"
+                }
+            )
+            
+            if gap:
+                logger.info(f"🔍 MCP tool gap detected by {self.specialty}: {gap.capability_needed}")
+                if gap.mcp_solutions:
+                    logger.info(f"📦 Found {len(gap.mcp_solutions)} potential MCP solutions")
+                    for i, mcp in enumerate(gap.mcp_solutions[:3]):
+                        logger.info(f"   {i+1}. {mcp.capability.name} ({mcp.match_type}, score: {mcp.match_score:.2f})")
+                else:
+                    logger.info(f"🔧 No MCP solutions found - will attempt custom tool creation")
+            
+            return gap
+            
+        except Exception as e:
+            logger.error(f"Error detecting MCP tool gap: {e}")
+            return None
+    
+    async def _handle_mcp_tool_gap(self, mcp_gap, message: str, context: Dict[str, Any]) -> Dict[str, Any]:
+        """
+        Handle a detected MCP tool gap by requesting tool creation.
+        
+        Returns information about the MCP tool request.
+        """
+        try:
+            user_id = context.get('user_id', 'unknown')
+            
+            # Check if we already have a pending request for this capability
+            existing_request = self._find_existing_mcp_request(mcp_gap.capability_needed)
+            if existing_request:
+                return await self._check_mcp_request_status(existing_request, message, context)
+            
+            # Request tool creation (will use MCP-first approach)
+            request_id = await self.dynamic_tool_builder.request_tool_creation(
+                gap=mcp_gap, 
+                user_id=user_id
+            )
+            
+            # Track the request
+            self.mcp_tool_requests[mcp_gap.gap_id] = request_id
+            
+            # Store the pending task for later completion
+            self.pending_mcp_tasks.append({
+                'message': message,
+                'context': context,
+                'gap_id': mcp_gap.gap_id,
+                'request_id': request_id,
+                'created_at': datetime.utcnow(),
+                'mcp_solutions_count': len(mcp_gap.mcp_solutions) if mcp_gap.mcp_solutions else 0
+            })
+            
+            # Generate enhanced response based on available solutions
+            if mcp_gap.mcp_solutions:
+                enhanced_response = await self._generate_mcp_solution_response(mcp_gap, request_id)
+                return {
+                    'mcp_solutions_found': len(mcp_gap.mcp_solutions),
+                    'enhanced_response': enhanced_response,
+                    'request_id': request_id,
+                    'best_solution': mcp_gap.mcp_solutions[0].capability.name
+                }
+            else:
+                tool_building_response = await self._generate_tool_building_response(mcp_gap, request_id)
+                return {
+                    'mcp_solutions_found': 0,
+                    'tool_building_response': tool_building_response,
+                    'request_id': request_id,
+                    'custom_tool_needed': True
+                }
+                
+        except Exception as e:
+            logger.error(f"Error handling MCP tool gap: {e}")
+            return {
+                'error': str(e),
+                'mcp_solutions_found': 0
+            }
+    
+    async def _generate_mcp_solution_response(self, mcp_gap, request_id: str) -> str:
+        """Generate response when MCP solutions are available."""
+        best_mcp = mcp_gap.mcp_solutions[0]
+        
+        response = f"""I found a way to help you! 🚀
+
+**What you need:** {mcp_gap.capability_needed}
+**Solution:** I can use the **{best_mcp.capability.name}** MCP
+
+📦 **Available MCP Solutions:**"""
+        
+        for i, mcp in enumerate(mcp_gap.mcp_solutions[:3]):
+            match_emoji = "✅" if mcp.match_type == "exact_existing" else "🔌" if mcp.match_type == "exact" else "🔗"
+            response += f"\n{i+1}. {match_emoji} **{mcp.capability.name}** ({mcp.match_score:.0%} match)"
+            response += f"\n   {mcp.capability.description}"
+        
+        if best_mcp.match_type == "exact_existing":
+            response += f"\n\n✅ **Great news!** The {best_mcp.capability.name} is already connected. Let me set this up for you..."
+        else:
+            response += f"\n\n🔌 **Setup needed:** I'll help you connect to {best_mcp.capability.name}. You may need to provide some credentials."
+        
+        response += f"\n\n**Request ID:** `{request_id}`\nI'll handle the technical details - you focus on your task! 🎯"
+        
+        return response
+    
+    async def _generate_tool_building_response(self, mcp_gap, request_id: str) -> str:
+        """Generate response when custom tool building is needed."""
+        
+        response = f"""I need to build a custom tool to help you! 🛠️
+
+**What I need:** {mcp_gap.capability_needed}
+**Why:** {mcp_gap.description}
+
+🔧 **Here's my plan:**
+1. I've analyzed your request and found I need a new capability
+2. No existing MCP (Model Context Protocol) tools match your needs
+3. I'll build a custom tool specifically for this task
+4. You might need to provide some information (like API keys)
+
+**Suggested approaches:**"""
+        
+        for solution in mcp_gap.suggested_solutions:
+            response += f"\n• {solution}"
+        
+        response += f"""
+
+**Request ID:** `{request_id}`
+
+I'll notify you when I need your input to complete the tool. This is how I continuously learn and improve! 🚀"""
+        
+        return response
+    
+    def _find_existing_mcp_request(self, capability: str) -> Optional[str]:
+        """Find if we already have a pending MCP request for this capability."""
+        capability_lower = capability.lower()
+        
+        for task in self.pending_mcp_tasks:
+            gap_id = task['gap_id']
+            gap = self.dynamic_tool_builder.active_gaps.get(gap_id)
+            if gap and capability_lower in gap.capability_needed.lower():
+                return task['request_id']
+        
+        return None
+    
+    async def _check_mcp_request_status(self, request_id: str, message: str, 
+                                      context: Dict[str, Any]) -> Dict[str, Any]:
+        """Check status of existing MCP tool request."""
+        request = self.dynamic_tool_builder.active_requests.get(request_id)
+        
+        if not request:
+            return {
+                'response': "I'm working on getting the MCP tools I need. Please try again in a moment.",
+                'mcp_solutions_found': 0
+            }
+        
+        status_messages = {
+            "analyzing": "🔍 I'm analyzing what MCP tool I need...",
+            "building": "🔧 I'm setting up the MCP connection automatically...",
+            "testing": "🧪 I'm testing the new MCP tool...",
+            "user_input_needed": f"👤 I need your help to set up an MCP! Check for collaboration request: {request_id}",
+            "completed": "✅ The MCP tool is ready! Let me retry your request...",
+            "failed": "❌ MCP setup failed. Let me try a different approach..."
+        }
+        
+        status_message = status_messages.get(request.status.value, "🔄 Working on your MCP tool request...")
+        
+        return {
+            'response': f"**MCP Tool Status:** {status_message}",
+            'request_id': request_id,
+            'status': request.status.value,
+            'mcp_solutions_found': 1  # Assume at least one if we have a request
+        }
+
     async def _execute_tools(self, message: str, context: Dict[str, Any]) -> Dict[str, Any]:
         """Execute available tools based on the message content."""
         tool_results = {}
@@ -567,17 +887,110 @@ Provide improvement analysis for the {self.specialty} specialist:"""
         )
     
     def _format_conversation_history(self, history: List[Dict[str, Any]]) -> str:
-        """Format conversation history for context."""
-        if not history:
+        """Format conversation history for context with token budget management."""
+        if not history or not self.token_management['enable_token_optimization']:
             return f"No previous conversation history in {self.specialty}."
         
+        max_history_tokens = self.token_management['max_history_tokens']
         formatted_history = []
-        for item in history[-3:]:  # Last 3 messages for context
-            role = "User" if item.get("message_type") == "user_message" else "Assistant"
-            content = item.get("content", "")[:100]  # Truncate for context
-            formatted_history.append(f"{role}: {content}")
+        total_tokens = 0
         
-        return "\n".join(formatted_history)
+        # Process recent messages first (reverse order to prioritize recent)
+        for item in reversed(history[-5:]):  # Look at last 5 messages
+            role = "User" if item.get("message_type") == "user_message" else "Assistant"
+            content = item.get("content", "")
+            
+            # Smart truncation to fit budget
+            estimated_tokens = len(content) // 4
+            if total_tokens + estimated_tokens > max_history_tokens:
+                # Try to fit a truncated version
+                remaining_tokens = max_history_tokens - total_tokens
+                if remaining_tokens > 20:  # Only if we have meaningful space
+                    content = content[:remaining_tokens * 4] + "..."
+                    formatted_history.insert(0, f"{role}: {content}")
+                    total_tokens += remaining_tokens
+                break
+            
+            # Smart content truncation for readability
+            if len(content) > 200:  # Longer messages get truncated regardless
+                content = content[:200] + "..."
+            
+            formatted_history.insert(0, f"{role}: {content}")
+            total_tokens += len(content) // 4
+            
+            # Stop if we're approaching budget
+            if total_tokens >= max_history_tokens * 0.9:
+                break
+        
+        result = "\n".join(formatted_history) if formatted_history else f"No recent history in {self.specialty}."
+        logger.debug(f"History context: {len(result) // 4} tokens (budget: {max_history_tokens})")
+        return result
+    
+    def _calculate_context_budget(self, message: str) -> Dict[str, int]:
+        """Calculate dynamic token budget allocation based on task and model."""
+        if not self.token_management['adaptive_budget']:
+            # Use fixed budgets
+            return {
+                'system_prompt': 800,
+                'user_message': len(message) // 4,
+                'memory_context': self.token_management['max_memory_tokens'],
+                'working_memory': self.token_management['max_working_memory_tokens'],
+                'history': self.token_management['max_history_tokens'],
+                'tool_results': self.token_management['max_tool_results_tokens'],
+                'response_reserve': 1000
+            }
+        
+        # Dynamic budget allocation
+        total_window = self.context_windows.get(self.model_name, 4096)
+        response_reserve = 1000  # Reserve for response
+        available_context = total_window - response_reserve
+        
+        # Estimate base requirements
+        system_prompt_tokens = 800  # Roughly fixed
+        user_message_tokens = len(message) // 4
+        
+        # Calculate remaining budget for context
+        remaining_budget = available_context - system_prompt_tokens - user_message_tokens
+        
+        # Allocate remaining budget proportionally
+        if remaining_budget > 0:
+            # Prioritize based on task complexity
+            message_lower = message.lower()
+            is_complex = any(word in message_lower for word in ['analyze', 'explain', 'complex', 'detailed', 'comprehensive'])
+            
+            if is_complex:
+                # Complex tasks get more memory context
+                return {
+                    'system_prompt': system_prompt_tokens,
+                    'user_message': user_message_tokens,
+                    'memory_context': min(800, int(remaining_budget * 0.4)),
+                    'working_memory': min(400, int(remaining_budget * 0.2)),
+                    'history': min(300, int(remaining_budget * 0.2)),
+                    'tool_results': min(300, int(remaining_budget * 0.2)),
+                    'response_reserve': response_reserve
+                }
+            else:
+                # Simple tasks use less context
+                return {
+                    'system_prompt': system_prompt_tokens,
+                    'user_message': user_message_tokens,
+                    'memory_context': min(400, int(remaining_budget * 0.3)),
+                    'working_memory': min(200, int(remaining_budget * 0.2)),
+                    'history': min(200, int(remaining_budget * 0.2)),
+                    'tool_results': min(200, int(remaining_budget * 0.3)),
+                    'response_reserve': response_reserve
+                }
+        else:
+            # Minimal budget fallback
+            return {
+                'system_prompt': 600,  # Reduced system prompt
+                'user_message': user_message_tokens,
+                'memory_context': 200,
+                'working_memory': 100,
+                'history': 100,
+                'tool_results': 100,
+                'response_reserve': response_reserve
+            }
     
     def _format_context(self, context: Dict[str, Any]) -> str:
         """Format context information for the prompt."""
@@ -633,21 +1046,66 @@ Provide improvement analysis for the {self.specialty} specialist:"""
             logger.error(f"Error handling platform event: {e}")
     
     async def _get_memory_context(self, message: str, context: Dict[str, Any]) -> str:
-        """Retrieve relevant context from vector memory."""
-        if not self.vector_store:
+        """Retrieve relevant context from vector memory with smart token management."""
+        if not self.vector_store or not self.token_management['enable_token_optimization']:
             return ""
         
         try:
             user_id = context.get("user_id")
+            
+            # Use optimized search parameters
             similar_memories = await self.vector_store.search_similar_memories(
-                message, user_id=user_id, limit=3, similarity_threshold=0.7
+                message, 
+                user_id=user_id, 
+                limit=self.token_management['max_memories_to_load'],
+                similarity_threshold=self.token_management['similarity_threshold']
             )
             
-            if similar_memories:
-                context_parts = []
-                for memory in similar_memories:
-                    context_parts.append(f"- {memory.get('content_summary', '')}")  # Remove [:100]
-                return f"Relevant context from previous conversations:\n" + "\n".join(context_parts)
+            if not similar_memories:
+                return ""
+            
+            # Smart token-budgeted context building
+            context_parts = []
+            total_tokens = 0
+            max_memory_tokens = self.token_management['max_memory_tokens']
+            
+            for memory in similar_memories:
+                content = memory.get('content_summary', '')
+                if not content:
+                    continue
+                
+                # Estimate tokens (rough: 1 token ≈ 4 characters)
+                estimated_tokens = len(content) // 4
+                
+                # Check if this memory fits in our budget
+                if total_tokens + estimated_tokens > max_memory_tokens:
+                    # Try to fit a truncated version
+                    remaining_tokens = max_memory_tokens - total_tokens
+                    if remaining_tokens > 50:  # Only if we have meaningful space left
+                        truncated_content = content[:remaining_tokens * 4]
+                        # Find last complete sentence
+                        last_period = truncated_content.rfind('.')
+                        if last_period > len(truncated_content) * 0.7:  # If we found a good break point
+                            content = truncated_content[:last_period + 1]
+                        else:
+                            content = truncated_content + "..."
+                        context_parts.append(f"- {content}")
+                        total_tokens += len(content) // 4
+                    break
+                
+                context_parts.append(f"- {content}")
+                total_tokens += estimated_tokens
+                
+                # Stop if we're approaching our budget
+                if total_tokens >= max_memory_tokens * 0.9:
+                    break
+            
+            if context_parts:
+                result = f"Relevant context from previous conversations:\n" + "\n".join(context_parts)
+                # Log token usage for monitoring
+                actual_tokens = len(result) // 4
+                logger.debug(f"Memory context: {actual_tokens} tokens (budget: {max_memory_tokens})")
+                return result
             
         except Exception as e:
             logger.warning(f"Failed to retrieve memory context: {e}")
@@ -802,31 +1260,65 @@ Provide improvement analysis for the {self.specialty} specialist:"""
     async def persist_learning(self, pattern_type: str, pattern_data: Dict):
         """Persist learned patterns to vector store for all agents to access."""
         if self.vector_store:
-            embedding = await self.vector_store.generate_embedding(
-                f"{pattern_type}: {json.dumps(pattern_data)}"
-            )
-            await self.vector_store.store_memory(
-                content=json.dumps(pattern_data),
-                metadata={
-                    'type': 'learned_pattern',
-                    'pattern_type': pattern_type,
-                    'agent_specialty': self.specialty,
-                    'confidence': pattern_data.get('confidence', 0.5)
-                }
-            )
+            try:
+                # Store learned pattern using correct vector store method
+                conversation_id = f"learning_{pattern_type}_{datetime.utcnow().timestamp()}"
+                message_id = str(uuid.uuid4())
+                
+                await self.vector_store.store_conversation_memory(
+                    conversation_id=conversation_id,
+                    message_id=message_id,
+                    content=json.dumps(pattern_data),
+                    user_id="system",  # System-level learning
+                    content_type="learned_pattern",
+                    metadata={
+                        'pattern_type': pattern_type,
+                        'agent_specialty': self.specialty,
+                        'confidence': pattern_data.get('confidence', 0.5),
+                        'agent_id': self.agent_id
+                    }
+                )
+                
+                # Publish learning event for other agents
+                if self.event_bus:
+                    await self.event_bus.publish(
+                        EventType.PATTERN_DISCOVERED,
+                        {
+                            "agent_id": self.agent_id,
+                            "pattern_type": pattern_type,
+                            "specialty": self.specialty,
+                            "confidence": pattern_data.get('confidence', 0.5),
+                            "pattern_data": pattern_data
+                        },
+                        source=self.agent_id
+                    )
+                    
+                logger.info(f"Persisted learning pattern: {pattern_type} from {self.specialty}")
+                
+            except Exception as e:
+                logger.error(f"Failed to persist learning pattern: {e}")
 
     async def recall_relevant_patterns(self, context: str) -> List[Dict]:
         """Recall patterns learned by any agent relevant to current context."""
-        if self.vector_store:
-            return await self.vector_store.search_similar_memories(
+        if not self.vector_store:
+            return []
+        
+        try:
+            # Search for learned patterns using correct method parameters
+            results = await self.vector_store.search_similar_memories(
                 query=context,
-                content_types=['learned_pattern'],
-                limit=5
+                user_id="system",  # System-level patterns
+                limit=5,
+                similarity_threshold=0.7,
+                content_types=["learned_pattern"]  # Filter for learned patterns
             )
-        return []
+            return results or []
+        except Exception as e:
+            logger.warning(f"Failed to recall patterns: {e}")
+            return []
     
     async def save_working_memory(self):
-        """Save my current reasoning state between interactions."""
+        """Save compressed working memory with token budget management."""
         if not hasattr(self, '_working_memory'):
             self._working_memory = {
                 'last_task': None,
@@ -835,24 +1327,98 @@ Provide improvement analysis for the {self.specialty} specialist:"""
                 'conversation_flow': []
             }
         
-        # Update conversation flow
+        # Update with current interaction (compressed)
         if self.conversation_history:
             recent = self.conversation_history[-1]
-            self._working_memory['last_task'] = recent.get('message_preview', '')
-            self._working_memory['conversation_flow'].append({
+            task_preview = recent.get('message_preview', '')
+            
+            # Compress task preview to fit budget
+            max_task_tokens = 50  # Small budget for last task
+            if len(task_preview) > max_task_tokens * 4:
+                task_preview = task_preview[:max_task_tokens * 4] + "..."
+            
+            self._working_memory['last_task'] = task_preview
+            
+            # Keep only recent conversation flow (token-efficient)
+            flow_entry = {
                 'timestamp': datetime.utcnow().isoformat(),
-                'message': recent.get('message_preview', ''),
-                'specialty_used': self.specialty
-            })
+                'task_type': recent.get('specialty', self.specialty),
+                'tokens_used': recent.get('tokens_used', 0),
+                'success': recent.get('cost', 0) > 0  # Simple success indicator
+            }
+            self._working_memory['conversation_flow'].append(flow_entry)
         
-        # Save to vector store
-        await self.persist_learning('working_memory', {
-            'agent_id': self.agent_id,
-            'specialty': self.specialty,
-            'memory_state': self._working_memory,
-            'last_updated': datetime.utcnow().isoformat()
-        })
-
+        # Compress memory to fit token budget
+        compressed_memory = self._compress_working_memory()
+        
+        # Save compressed version to vector store
+        try:
+            await self.persist_learning('working_memory', {
+                'agent_id': self.agent_id,
+                'specialty': self.specialty,
+                'memory_state': compressed_memory,
+                'last_updated': datetime.utcnow().isoformat(),
+                'memory_size_estimate': len(json.dumps(compressed_memory)) // 4  # Token estimate
+            })
+        except Exception as e:
+            logger.warning(f"Failed to save working memory: {e}")
+    
+    def _compress_working_memory(self) -> Dict[str, Any]:
+        """Compress working memory to fit within token budget."""
+        max_working_memory_tokens = self.token_management['max_working_memory_tokens']
+        
+        # Keep only essential recent data
+        compressed = {
+            'last_task': self._working_memory.get('last_task', '')[:200],  # Limit to 50 tokens
+            'recent_patterns_count': len(self._working_memory.get('learned_approaches', {})),
+            'conversation_flow': self._working_memory.get('conversation_flow', [])[-3:],  # Last 3 only
+            'key_insights': self._extract_key_insights(),
+            'performance_summary': self._get_performance_summary()
+        }
+        
+        # Estimate and trim if needed
+        estimated_tokens = len(json.dumps(compressed)) // 4
+        if estimated_tokens > max_working_memory_tokens:
+            # Further compression - keep only most essential
+            compressed = {
+                'last_task': compressed['last_task'][:100],
+                'recent_patterns_count': compressed['recent_patterns_count'],
+                'last_interaction': compressed['conversation_flow'][-1] if compressed['conversation_flow'] else {},
+                'performance_summary': compressed['performance_summary']
+            }
+        
+        return compressed
+    
+    def _extract_key_insights(self) -> List[str]:
+        """Extract key insights from working memory (token-efficient)."""
+        insights = []
+        
+        # Add performance insights
+        if self.performance_metrics['total_interactions'] > 0:
+            success_rate = self.performance_metrics['successful_interactions'] / self.performance_metrics['total_interactions']
+            if success_rate < 0.8:
+                insights.append("low_success_rate")
+            if self.performance_metrics['total_cost'] > 0.1:  # Arbitrary threshold
+                insights.append("high_cost_usage")
+        
+        # Add recent pattern insights
+        if len(self._working_memory.get('learned_approaches', {})) > 5:
+            insights.append("rich_pattern_knowledge")
+        
+        return insights[:3]  # Limit to 3 insights
+    
+    def _get_performance_summary(self) -> Dict[str, Any]:
+        """Get compressed performance summary."""
+        return {
+            'total_interactions': self.performance_metrics['total_interactions'],
+            'success_rate': round(
+                self.performance_metrics['successful_interactions'] / max(1, self.performance_metrics['total_interactions']), 2
+            ),
+            'avg_cost': round(
+                self.performance_metrics['total_cost'] / max(1, self.performance_metrics['total_interactions']), 4
+            )
+        }
+    
     async def restore_working_memory(self):
         """Restore my previous reasoning state."""
         memories = await self.recall_relevant_patterns(
@@ -921,6 +1487,48 @@ Provide improvement analysis for the {self.specialty} specialist:"""
                     'confidence': 0.8
                 })
                 logger.info(f"Learned optimal parameters for {task_analysis['task_type']} tasks")
+            
+            # Publish events for existing improvement systems
+            if self.event_bus:
+                # Feed data to cost optimizer
+                if 'cost' in result:
+                    default_cost = self._estimate_default_cost(message, optimal_params)
+                    await self.event_bus.publish(
+                        EventType.AGENT_OPTIMIZED,
+                        {
+                            "agent_id": self.agent_id,
+                            "optimization_type": "adaptive_parameters",
+                            "cost_before": default_cost,
+                            "cost_after": result['cost'],
+                            "parameters_used": optimal_params,
+                            "savings": max(0, default_cost - result['cost']),
+                            "task_type": task_analysis['task_type'],
+                            "quality_score": quality_score
+                        },
+                        source=self.agent_id
+                    )
+                
+                # Feed data to workflow analyst and pattern recognition
+                if quality_score > 0.7:
+                    await self.event_bus.publish(
+                        EventType.WORKFLOW_COMPLETED,
+                        {
+                            "workflow_id": f"adaptive_task_{datetime.utcnow().timestamp()}",
+                            "agent_id": self.agent_id,
+                            "pattern_data": {
+                                "task_type": task_analysis['task_type'],
+                                "parameters": optimal_params,
+                                "quality_score": quality_score,
+                                "adaptive_success": True
+                            },
+                            "performance_metrics": {
+                                "tokens_used": result.get('tokens_used', 0),
+                                "cost": result.get('cost', 0.0),
+                                "model_used": result.get('model_used', self.model_name)
+                            }
+                        },
+                        source=self.agent_id
+                    )
             
             # Add adaptation metadata
             result['adaptation_used'] = True
@@ -1154,13 +1762,39 @@ Analysis:"""
             logger.warning(f"Quality calculation failed: {e}")
             return 0.5
     
+    def _estimate_default_cost(self, message: str, optimal_params: Dict[str, Any]) -> float:
+        """Estimate what the cost would have been with default parameters."""
+        try:
+            # Rough estimation based on message length and default model
+            message_tokens = len(message.split()) * 1.3  # Rough token estimation
+            default_tokens = min(self.max_tokens, message_tokens + 200)  # Default response estimate
+            
+            # Cost per token for default model (rough estimates)
+            if self.model_name.startswith('gpt-4'):
+                cost_per_token = 0.00003  # $0.03 per 1K tokens
+            else:
+                cost_per_token = 0.000002  # $0.002 per 1K tokens
+            
+            return default_tokens * cost_per_token
+            
+        except Exception as e:
+            logger.warning(f"Cost estimation failed: {e}")
+            return 0.01  # Default fallback cost
+    
     def get_agent_stats(self) -> Dict[str, Any]:
         """Get comprehensive statistics about this agent instance."""
         success_rate = 0.0
         if self.performance_metrics["total_interactions"] > 0:
             success_rate = self.performance_metrics["successful_interactions"] / self.performance_metrics["total_interactions"]
         
-        return {
+        # Calculate token efficiency metrics
+        avg_tokens_per_interaction = 0.0
+        avg_cost_per_interaction = 0.0
+        if self.performance_metrics["total_interactions"] > 0:
+            avg_tokens_per_interaction = self.performance_metrics["total_tokens"] / self.performance_metrics["total_interactions"]
+            avg_cost_per_interaction = self.performance_metrics["total_cost"] / self.performance_metrics["total_interactions"]
+        
+        base_stats = {
             "agent_id": self.agent_id,
             "specialty": self.specialty,
             "model_name": self.model_name,
@@ -1170,10 +1804,8 @@ Analysis:"""
             "total_tokens_used": self.performance_metrics["total_tokens"],
             "total_cost": self.performance_metrics["total_cost"],
             "average_response_time_ms": self.performance_metrics["average_response_time"],
-            "cost_per_interaction": (
-                self.performance_metrics["total_cost"] / self.performance_metrics["total_interactions"]
-                if self.performance_metrics["total_interactions"] > 0 else 0.0
-            ),
+            "cost_per_interaction": avg_cost_per_interaction,
+            "tokens_per_interaction": avg_tokens_per_interaction,
             "available_tools": [tool.name for tool in self.tools],
             "enabled_tools": [tool.name for tool in self.tools if tool.enabled],
             "recent_improvement_suggestions": self.performance_metrics["improvement_suggestions"][-5:],
@@ -1186,6 +1818,54 @@ Analysis:"""
             },
             "created_at": datetime.utcnow().isoformat()
         }
+        
+        # Add token optimization stats if enabled
+        if self.token_management['enable_token_optimization']:
+            base_stats["token_optimization"] = self.get_token_optimization_stats()
+        
+        return base_stats
+    
+    def get_token_optimization_stats(self) -> Dict[str, Any]:
+        """Get detailed token optimization and cost efficiency statistics."""
+        stats = {
+            "optimization_enabled": self.token_management['enable_token_optimization'],
+            "token_budgets": {
+                "memory_context": self.token_management['max_memory_tokens'],
+                "working_memory": self.token_management['max_working_memory_tokens'],
+                "history": self.token_management['max_history_tokens'],
+                "tool_results": self.token_management['max_tool_results_tokens']
+            },
+            "search_parameters": {
+                "similarity_threshold": self.token_management['similarity_threshold'],
+                "max_memories_loaded": self.token_management['max_memories_to_load']
+            },
+            "features": {
+                "context_compression": self.token_management['context_compression'],
+                "adaptive_budget": self.token_management['adaptive_budget']
+            }
+        }
+        
+        # Add cost efficiency metrics if available
+        if hasattr(self, 'cost_efficiency_history') and self.cost_efficiency_history:
+            avg_cost_per_token = sum(self.cost_efficiency_history) / len(self.cost_efficiency_history)
+            stats["cost_efficiency"] = {
+                "avg_cost_per_token": round(avg_cost_per_token, 6),
+                "recent_measurements": len(self.cost_efficiency_history),
+                "efficiency_trend": "improving" if len(self.cost_efficiency_history) >= 2 and 
+                                  self.cost_efficiency_history[-1] < self.cost_efficiency_history[0] else "stable"
+            }
+        
+        # Estimate potential savings
+        if self.performance_metrics["total_interactions"] > 0:
+            estimated_tokens_without_optimization = self.performance_metrics["total_tokens"] * 2.5  # Rough estimate
+            estimated_savings = max(0, estimated_tokens_without_optimization - self.performance_metrics["total_tokens"])
+            stats["estimated_savings"] = {
+                "tokens_saved": int(estimated_savings),
+                "cost_saved": round(estimated_savings * 0.000002, 4),  # Rough cost per token
+                "efficiency_gain": f"{round((estimated_savings / estimated_tokens_without_optimization) * 100, 1)}%" if estimated_tokens_without_optimization > 0 else "0%"
+            }
+        
+        return stats
     
     def update_configuration(self, **kwargs):
         """
@@ -1206,6 +1886,10 @@ Analysis:"""
                 setattr(self, attr, kwargs[param])
                 logger.info(f"Updated {param} for Universal Agent '{self.specialty}'")
         
+        # Handle token optimization settings
+        if "token_optimization" in kwargs:
+            self.update_token_optimization_settings(kwargs["token_optimization"])
+        
         # Recreate LLM if temperature or max_tokens changed
         if "temperature" in kwargs or "max_tokens" in kwargs:
             self.llm = ChatOpenAI(
@@ -1221,9 +1905,289 @@ Analysis:"""
             self.main_prompt = self._create_main_prompt()
             logger.info(f"Recreated prompts for Universal Agent '{self.specialty}'")
     
+    def update_token_optimization_settings(self, settings: Dict[str, Any]):
+        """
+        Update token optimization settings.
+        
+        Args:
+            settings: Dictionary of token management settings to update
+        """
+        updatable_settings = [
+            'max_memory_tokens', 'max_working_memory_tokens', 'max_history_tokens',
+            'max_tool_results_tokens', 'similarity_threshold', 'max_memories_to_load',
+            'enable_token_optimization', 'context_compression', 'adaptive_budget'
+        ]
+        
+        for setting, value in settings.items():
+            if setting in updatable_settings:
+                self.token_management[setting] = value
+                logger.info(f"Updated token optimization setting '{setting}' to {value}")
+            else:
+                logger.warning(f"Unknown token optimization setting: {setting}")
+        
+        # Log current optimization status
+        if self.token_management['enable_token_optimization']:
+            logger.info(f"Token optimization ENABLED for {self.specialty}")
+            logger.info(f"  Memory budget: {self.token_management['max_memory_tokens']} tokens")
+            logger.info(f"  Similarity threshold: {self.token_management['similarity_threshold']}")
+        else:
+            logger.info(f"Token optimization DISABLED for {self.specialty}")
+    
+    def enable_token_optimization(self, 
+                                 memory_budget: int = 500,
+                                 similarity_threshold: float = 0.8,
+                                 aggressive_mode: bool = False):
+        """
+        Enable token optimization with specified settings.
+        
+        Args:
+            memory_budget: Maximum tokens for memory context
+            similarity_threshold: Minimum similarity for memory retrieval
+            aggressive_mode: If True, use more aggressive optimization
+        """
+        if aggressive_mode:
+            settings = {
+                'enable_token_optimization': True,
+                'max_memory_tokens': min(300, memory_budget),
+                'max_working_memory_tokens': 200,
+                'max_history_tokens': 150,
+                'max_tool_results_tokens': 150,
+                'similarity_threshold': max(0.85, similarity_threshold),
+                'max_memories_to_load': 1,
+                'context_compression': True,
+                'adaptive_budget': True
+            }
+        else:
+            settings = {
+                'enable_token_optimization': True,
+                'max_memory_tokens': memory_budget,
+                'max_working_memory_tokens': 300,
+                'max_history_tokens': 200,
+                'max_tool_results_tokens': 200,
+                'similarity_threshold': similarity_threshold,
+                'max_memories_to_load': 2,
+                'context_compression': True,
+                'adaptive_budget': True
+            }
+        
+        self.update_token_optimization_settings(settings)
+        logger.info(f"🎯 Token optimization {'AGGRESSIVE' if aggressive_mode else 'STANDARD'} mode enabled for {self.specialty}")
+    
+    def disable_token_optimization(self):
+        """Disable token optimization - use full context."""
+        self.token_management['enable_token_optimization'] = False
+        logger.info(f"❌ Token optimization disabled for {self.specialty} - using full context")
+    
+    def get_cost_projection(self, estimated_daily_requests: int) -> Dict[str, Any]:
+        """
+        Project daily/monthly costs based on current usage patterns.
+        
+        Args:
+            estimated_daily_requests: Expected number of requests per day
+            
+        Returns:
+            Cost projection with optimization impact
+        """
+        if self.performance_metrics["total_interactions"] == 0:
+            return {"error": "No interaction data available for projection"}
+        
+        avg_cost_per_request = self.performance_metrics["total_cost"] / self.performance_metrics["total_interactions"]
+        avg_tokens_per_request = self.performance_metrics["total_tokens"] / self.performance_metrics["total_interactions"]
+        
+        # Current projections
+        daily_cost = avg_cost_per_request * estimated_daily_requests
+        monthly_cost = daily_cost * 30
+        
+        # Estimate cost without optimization (rough 2.5x multiplier)
+        unoptimized_cost_per_request = avg_cost_per_request * 2.5
+        unoptimized_daily_cost = unoptimized_cost_per_request * estimated_daily_requests
+        unoptimized_monthly_cost = unoptimized_daily_cost * 30
+        
+        return {
+            "agent_specialty": self.specialty,
+            "optimization_enabled": self.token_management['enable_token_optimization'],
+            "current_usage": {
+                "avg_cost_per_request": round(avg_cost_per_request, 4),
+                "avg_tokens_per_request": round(avg_tokens_per_request, 1),
+                "daily_cost": round(daily_cost, 2),
+                "monthly_cost": round(monthly_cost, 2)
+            },
+            "without_optimization": {
+                "estimated_daily_cost": round(unoptimized_daily_cost, 2),
+                "estimated_monthly_cost": round(unoptimized_monthly_cost, 2)
+            },
+            "savings": {
+                "daily_savings": round(unoptimized_daily_cost - daily_cost, 2),
+                "monthly_savings": round(unoptimized_monthly_cost - monthly_cost, 2),
+                "cost_reduction_percentage": round(((unoptimized_monthly_cost - monthly_cost) / unoptimized_monthly_cost) * 100, 1) if unoptimized_monthly_cost > 0 else 0
+            },
+            "projection_based_on": f"{self.performance_metrics['total_interactions']} interactions"
+        }
+    
+    async def check_mcp_tool_requests_status(self, user_id: str) -> Optional[Dict[str, Any]]:
+        """
+        Check status of MCP tool creation requests for this user.
+        
+        This method can be called by Slack interface or other UIs
+        to show users what MCP tool requests need their attention.
+        """
+        if not self.dynamic_tool_builder:
+            return None
+        
+        collaboration_request = await self.dynamic_tool_builder.get_user_collaboration_request(user_id)
+        
+        if collaboration_request:
+            # Find the corresponding pending task
+            pending_task = None
+            for task in self.pending_mcp_tasks:
+                if task['request_id'] == collaboration_request['request_id']:
+                    pending_task = task
+                    break
+            
+            if pending_task:
+                collaboration_request['original_task'] = {
+                    'message': pending_task['message'],
+                    'agent': self.specialty,
+                    'created_at': pending_task['created_at'].isoformat(),
+                    'mcp_solutions_available': pending_task.get('mcp_solutions_count', 0) > 0
+                }
+        
+        return collaboration_request
+    
+    async def handle_mcp_tool_ready(self, request_id: str) -> Optional[Dict[str, Any]]:
+        """
+        Handle notification that a requested MCP tool is ready.
+        
+        This completes any pending tasks that were waiting for the MCP tool.
+        """
+        try:
+            # Find pending task for this request
+            pending_task = None
+            for i, task in enumerate(self.pending_mcp_tasks):
+                if task['request_id'] == request_id:
+                    pending_task = self.pending_mcp_tasks.pop(i)
+                    break
+            
+            if not pending_task:
+                logger.warning(f"No pending MCP task found for request {request_id}")
+                return None
+            
+            # Reload MCP tools to include the new tool
+            if self.mcp_tool_registry:
+                await self._reload_available_mcp_tools()
+            
+            # Retry the original task with the new MCP tool
+            logger.info(f"🔄 Retrying original task with new MCP tool: {pending_task['message'][:50]}...")
+            
+            result = await self.process_message(
+                pending_task['message'],
+                pending_task['context']
+            )
+            
+            # Enhanced response indicating MCP tool was used
+            if result.get('confidence', 0) >= 0.7:
+                result['mcp_tool_creation_success'] = True
+                result['original_request_id'] = request_id
+                result['response'] = f"✅ **Task completed with new MCP tool!**\n\n{result['response']}\n\n*I successfully set up and used a new MCP tool to complete your original request.*"
+            
+            return result
+            
+        except Exception as e:
+            logger.error(f"Error handling MCP tool ready notification: {e}")
+            return None
+    
+    async def _reload_available_mcp_tools(self):
+        """Reload available MCP tools from the registry."""
+        try:
+            if self.mcp_tool_registry:
+                # Get updated MCP tool list
+                available_tools = await self.mcp_tool_registry.get_available_tools()
+                
+                # Convert to ToolCapability objects and add to agent
+                for tool_info in available_tools:
+                    tool_capability = ToolCapability(
+                        name=tool_info['tool_name'],
+                        description=tool_info['description'],
+                        function=self._create_mcp_tool_function(tool_info['tool_id']),
+                        enabled=True
+                    )
+                    
+                    # Add if not already present
+                    if not any(t.name == tool_capability.name for t in self.tools):
+                        self.tools.append(tool_capability)
+                        logger.info(f"📦 Added new MCP tool: {tool_capability.name}")
+                        
+        except Exception as e:
+            logger.error(f"Error reloading MCP tools: {e}")
+    
+    def _create_mcp_tool_function(self, tool_id: str) -> callable:
+        """Create a function wrapper for MCP tool execution."""
+        async def mcp_tool_wrapper(message: str, context: Dict[str, Any]) -> Dict[str, Any]:
+            try:
+                if self.mcp_tool_registry:
+                    # Extract parameters from message (simplified)
+                    parameters = {"message": message, "context": context}
+                    return await self.mcp_tool_registry.execute_tool(tool_id, parameters)
+                else:
+                    return {"error": "MCP tool registry not available"}
+            except Exception as e:
+                return {"error": f"MCP tool execution failed: {str(e)}"}
+        
+        return mcp_tool_wrapper
+    
+    async def get_pending_mcp_tasks_count(self) -> int:
+        """Get count of pending tasks waiting for MCP tools."""
+        return len(self.pending_mcp_tasks)
+    
+    async def get_mcp_requests_summary(self) -> Dict[str, Any]:
+        """Get summary of MCP tool requests for monitoring."""
+        return {
+            "active_mcp_requests": len(self.mcp_tool_requests),
+            "pending_mcp_tasks": len(self.pending_mcp_tasks),
+            "capabilities_requested": [
+                self.dynamic_tool_builder.active_gaps[gap_id].capability_needed
+                for gap_id in self.mcp_tool_requests.keys()
+                if self.dynamic_tool_builder and gap_id in self.dynamic_tool_builder.active_gaps
+            ],
+            "recent_mcp_requests": [
+                {
+                    "capability": self.dynamic_tool_builder.active_gaps[task['gap_id']].capability_needed if self.dynamic_tool_builder and task['gap_id'] in self.dynamic_tool_builder.active_gaps else "unknown",
+                    "created_at": task['created_at'].isoformat(),
+                    "mcp_solutions_available": task.get('mcp_solutions_count', 0) > 0,
+                    "status": self.dynamic_tool_builder.active_requests.get(task['request_id'], {}).status.value if self.dynamic_tool_builder and hasattr(self.dynamic_tool_builder.active_requests.get(task['request_id'], {}), 'status') else 'unknown'
+                }
+                for task in self.pending_mcp_tasks[-5:]  # Last 5 requests
+            ]
+        }
+    
+    async def _save_pending_mcp_tasks(self):
+        """Save pending MCP tasks to vector store for recovery."""
+        try:
+            if self.pending_mcp_tasks:
+                tasks_data = {
+                    'agent_id': self.agent_id,
+                    'specialty': self.specialty,
+                    'pending_tasks': self.pending_mcp_tasks,
+                    'saved_at': datetime.utcnow().isoformat()
+                }
+                
+                # Store in vector memory for recovery
+                await self.persist_learning('pending_mcp_tasks', tasks_data)
+                logger.info(f"💾 Saved {len(self.pending_mcp_tasks)} pending MCP tasks for {self.specialty}")
+                
+        except Exception as e:
+            logger.error(f"Error saving pending MCP tasks: {e}")
+
     async def close(self):
         """Close the agent and cleanup platform resources."""
         try:
+            # Save working memory and MCP state before closing to prevent state loss
+            await self.save_working_memory()
+            
+            # Save pending MCP tasks for later recovery
+            if self.pending_mcp_tasks:
+                await self._save_pending_mcp_tasks()
+            
             logger.info(f"Closing Universal Agent '{self.specialty}' connections...")
             
             # Close LLM clients
@@ -1243,6 +2207,13 @@ Analysis:"""
             # Unsubscribe from events
             if self.event_bus:
                 await self.event_bus.unsubscribe(self.agent_id)
+            
+            # Close MCP integrations
+            if self.mcp_tool_registry:
+                try:
+                    await self.mcp_tool_registry.close()
+                except Exception as e:
+                    logger.warning(f"Error closing MCP tool registry: {e}")
             
             # Close tool resources
             for tool in self.tools:
