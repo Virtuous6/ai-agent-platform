@@ -1081,10 +1081,8 @@ Respond with JSON only.
             if not runbook_name:
                 runbook_name = await self._select_runbook_for_message(message, context)
             
-            # Load and execute runbook workflow
-            workflow = await self._workflow_engine.load_runbook_workflow(
-                f"runbooks/active/{runbook_name}.yaml"
-            )
+            # Load and execute runbook workflow from Supabase
+            workflow = await self._workflow_engine.load_runbook_from_supabase(runbook_name)
             
             if not workflow:
                 logger.warning("Failed to load workflow, falling back to standard routing")
@@ -1136,21 +1134,54 @@ Respond with JSON only.
             return await self.route_request(message, context)
 
     async def _select_runbook_for_message(self, message: str, context: Dict[str, Any]) -> str:
-        """Select appropriate runbook based on message analysis."""
-        
-        # Simple keyword-based selection for now
-        # TODO: Enhance with LLM-based runbook selection
-        
-        message_lower = message.lower()
-        
-        if any(word in message_lower for word in ['what', 'how', 'why', 'when', 'where', 'who', '?']):
-            return 'answer-question'
-        elif any(word in message_lower for word in ['code', 'debug', 'error', 'bug', 'technical']):
-            return 'technical-support'  # Create this next
-        elif any(word in message_lower for word in ['research', 'analyze', 'study', 'investigate']):
-            return 'research-task'  # Create this next
-        else:
-            return 'answer-question'  # Default fallback
+        """Select appropriate runbook based on message analysis using Supabase."""
+        try:
+            # Import and get runbook manager
+            from runbooks.manager import get_runbook_manager
+            runbook_manager = await get_runbook_manager()
+            
+            # Find matching runbooks using intelligent database queries
+            matches = await runbook_manager.find_matching_runbooks(
+                message=message,
+                agent_type=context.get("preferred_agent"),
+                user_context=context
+            )
+            
+            if matches:
+                # Return the best matching runbook
+                best_runbook, match_score = matches[0]
+                logger.info(f"Selected runbook: {best_runbook.name} (score: {match_score:.2f})")
+                return best_runbook.name
+            
+            # Fallback: try to get any active runbook for questions
+            question_keywords = ["what", "how", "why", "when", "where", "who", "?"]
+            if any(keyword in message.lower() for keyword in question_keywords):
+                # Try to get answer-question runbook specifically
+                runbook = await runbook_manager.get_runbook("answer-question")
+                if runbook:
+                    return runbook.name
+            
+            # Ultimate fallback - get any active runbook
+            runbooks = await runbook_manager.list_runbooks()
+            if runbooks:
+                return runbooks[0].name
+            
+            logger.warning("No runbooks available - falling back to standard routing")
+            return None
+            
+        except Exception as e:
+            logger.error(f"Error selecting runbook: {e}")
+            # Fallback to old behavior if runbook manager fails
+            message_lower = message.lower()
+            
+            if any(word in message_lower for word in ['what', 'how', 'why', 'when', 'where', 'who', '?']):
+                return 'answer-question'
+            elif any(word in message_lower for word in ['code', 'debug', 'error', 'bug', 'technical']):
+                return 'technical-support'  # Create this next
+            elif any(word in message_lower for word in ['research', 'analyze', 'study', 'investigate']):
+                return 'research-task'  # Create this next
+            else:
+                return 'answer-question'  # Default fallback
 
     async def get_improvement_status(self) -> Dict[str, Any]:
         """Get current improvement system status."""

@@ -87,6 +87,49 @@ class RunbookToGraphConverter:
             logger.error(f"Failed to convert runbook {runbook_path}: {str(e)}")
             raise ValueError(f"Runbook conversion failed: {str(e)}")
     
+    async def convert_supabase_runbook_to_graph(self, runbook, 
+                                              agents: Dict[str, Any], 
+                                              tools: Dict[str, Any]) -> Optional[Any]:
+        """
+        Convert a Supabase runbook object to an executable LangGraph workflow.
+        
+        Args:
+            runbook: GlobalRunbook object from Supabase
+            agents: Available agent instances
+            tools: Available tool instances
+            
+        Returns:
+            Compiled LangGraph workflow
+        """
+        if not LANGGRAPH_AVAILABLE:
+            logger.error("LangGraph not available - cannot convert runbooks")
+            return None
+        
+        try:
+            # Use the runbook definition directly (already a dict)
+            runbook_data = runbook.definition
+            
+            # Create state graph
+            workflow = StateGraph(RunbookState)
+            
+            # Build nodes from runbook steps
+            await self._build_nodes(workflow, runbook_data, agents, tools)
+            
+            # Build edges and conditions
+            await self._build_edges(workflow, runbook_data)
+            
+            # Set entry point
+            workflow.set_entry_point("start")
+            
+            # Compile and return
+            compiled_workflow = workflow.compile()
+            logger.info(f"Successfully converted Supabase runbook: {runbook.name}")
+            return compiled_workflow
+            
+        except Exception as e:
+            logger.error(f"Failed to convert Supabase runbook {runbook.name}: {str(e)}")
+            raise ValueError(f"Supabase runbook conversion failed: {str(e)}")
+    
     async def _load_runbook(self, runbook_path: str) -> Dict[str, Any]:
         """Load and validate runbook YAML file."""
         try:

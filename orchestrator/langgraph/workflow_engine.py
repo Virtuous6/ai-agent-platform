@@ -41,6 +41,7 @@ class LangGraphWorkflowEngine:
         self.tools = tools
         self.supabase_logger = supabase_logger
         self.active_workflows: Dict[str, Any] = {}
+        self._runbook_manager_initialized = False
         
         if not LANGGRAPH_AVAILABLE:
             logger.warning("LangGraph not available - workflow engine in fallback mode")
@@ -49,6 +50,21 @@ class LangGraphWorkflowEngine:
             self.converter = RunbookToGraphConverter()
         
         logger.info("LangGraph Workflow Engine initialized")
+    
+    async def initialize_runbook_manager(self, supabase_url: str, supabase_key: str) -> bool:
+        """Initialize the runbook manager for Supabase access."""
+        try:
+            from runbooks.manager import initialize_runbook_manager
+            success = await initialize_runbook_manager(supabase_url, supabase_key)
+            self._runbook_manager_initialized = success
+            if success:
+                logger.info("Runbook manager initialized for workflow engine")
+            else:
+                logger.error("Failed to initialize runbook manager")
+            return success
+        except Exception as e:
+            logger.error(f"Error initializing runbook manager: {e}")
+            return False
     
     async def load_runbook_workflow(self, runbook_path: str) -> Optional[Any]:
         """
@@ -80,6 +96,48 @@ class LangGraphWorkflowEngine:
             raise ValueError(
                 f"Runbook loading failed for '{runbook_path}'. "
                 f"Error: {str(e)}. Check YAML structure and agent availability."
+            )
+    
+    async def load_runbook_from_supabase(self, runbook_name: str) -> Optional[Any]:
+        """
+        Load and compile a runbook from Supabase into an executable LangGraph workflow.
+        
+        Args:
+            runbook_name: Name of the runbook in Supabase
+            
+        Returns:
+            Compiled LangGraph workflow or None if unavailable
+        """
+        if not LANGGRAPH_AVAILABLE:
+            logger.warning("LangGraph not available - cannot load workflow")
+            return None
+        
+        try:
+            # Import and get runbook manager
+            from runbooks.manager import get_runbook_manager
+            runbook_manager = await get_runbook_manager()
+            
+            # Get runbook from Supabase
+            runbook = await runbook_manager.get_runbook(runbook_name)
+            if not runbook:
+                logger.error(f"Runbook '{runbook_name}' not found in Supabase")
+                return None
+            
+            # Convert Supabase runbook to workflow
+            workflow = await self.converter.convert_supabase_runbook_to_graph(
+                runbook, self.agents, self.tools
+            )
+            
+            self.active_workflows[runbook_name] = workflow
+            
+            logger.info(f"Loaded Supabase runbook workflow: {runbook_name}")
+            return workflow
+            
+        except Exception as e:
+            logger.error(f"Failed to load Supabase runbook {runbook_name}: {str(e)}")
+            raise ValueError(
+                f"Supabase runbook loading failed for '{runbook_name}'. "
+                f"Error: {str(e)}. Check runbook definition and agent availability."
             )
     
     async def execute_workflow(self, workflow_name: str, initial_state: Dict[str, Any],
