@@ -278,19 +278,23 @@ class ComprehensiveProductionTest:
             # Test universal agent
             from agents.universal_agent import UniversalAgent
             
-            agent = UniversalAgent("test_agent", "general", db_logger)
+            # Create Universal Agent with correct parameters
+            universal_agent = UniversalAgent(
+                specialty="Production Testing",
+                system_prompt="You are a specialist in production testing and system validation.",
+                supabase_logger=db_logger
+            )
             
-            # Test agent processing
-            response = await agent.process_message(
-                message="What is 2+2?",
-                context={"user_id": "production_test", "test": True}
+            # Test universal agent with a specialized query
+            response = await universal_agent.process_message(
+                message="Test universal agent with dynamic configuration",
+                context={"user_id": "production_test"}
             )
             
             if response and response.get("response"):
-                logger.info("✅ Universal Agent: Processing working")
+                logger.info("✅ Universal Agent: Working")
                 self.test_results["ai_systems"]["universal_agent"] = "✅ Working"
             else:
-                logger.warning("⚠️ Universal Agent: Processing issues")
                 self.test_results["ai_systems"]["universal_agent"] = "⚠️ Issue"
                 
         except Exception as e:
@@ -303,13 +307,13 @@ class ComprehensiveProductionTest:
             try:
                 if agent_type == "general":
                     from agents.general.general_agent import GeneralAgent
-                    agent = GeneralAgent(db_logger)
+                    agent = GeneralAgent(supabase_logger=db_logger)
                 elif agent_type == "technical":
                     from agents.technical.technical_agent import TechnicalAgent
-                    agent = TechnicalAgent(db_logger)
+                    agent = TechnicalAgent(supabase_logger=db_logger)
                 elif agent_type == "research":
                     from agents.research.research_agent import ResearchAgent
-                    agent = ResearchAgent(db_logger)
+                    agent = ResearchAgent(supabase_logger=db_logger)
                 
                 # Test agent with simple query
                 response = await agent.process_message(
@@ -317,7 +321,7 @@ class ComprehensiveProductionTest:
                     context={"user_id": "production_test"}
                 )
                 
-                if response:
+                if response and response.get("response"):
                     logger.info(f"✅ {agent_type.title()} Agent: Working")
                     self.test_results["ai_systems"][f"{agent_type}_agent"] = "✅ Working"
                 else:
@@ -420,8 +424,13 @@ class ComprehensiveProductionTest:
             
             # This would normally test the connection, but we'll simulate
             result = await supabase_card.test_connection(test_credentials)
-            logger.info("✅ MCP Run Cards: Connection testing working")
-            self.test_results["integrations"]["mcp_run_cards"] = "✅ Working"
+            
+            if result.get("success", False):
+                logger.info("✅ MCP Run Cards: Connection testing working")
+                self.test_results["integrations"]["mcp_run_cards"] = "✅ Working"
+            else:
+                logger.info("⚠️ MCP Run Cards: Connection testing needs attention")
+                self.test_results["integrations"]["mcp_run_cards"] = "⚠️ Issue"
             
             # Create test MCP connection and usage
             test_connection_id = await self._create_test_mcp_connection(db_logger)
@@ -498,12 +507,12 @@ class ComprehensiveProductionTest:
             
             cost_optimizer = CostOptimizer(db_logger)
             
-            # Analyze cost optimization opportunities
-            optimizations = await cost_optimizer.analyze_cost_optimization_opportunities()
+            # Analyze cost optimization opportunities using correct method
+            optimizations = await cost_optimizer.analyze_cost_patterns(days_back=1)
             
-            if optimizations:
-                logger.info(f"✅ Cost Optimization: {len(optimizations)} opportunities")
-                self.test_results["components"]["cost_optimization"] = f"✅ {len(optimizations)} opportunities"
+            if optimizations and optimizations.get("optimizations_found", 0) > 0:
+                logger.info(f"✅ Cost Optimization: {optimizations.get('optimizations_found', 0)} opportunities")
+                self.test_results["components"]["cost_optimization"] = f"✅ {optimizations.get('optimizations_found', 0)} opportunities"
             else:
                 self.test_results["components"]["cost_optimization"] = "⚠️ No opportunities"
             
@@ -683,9 +692,21 @@ class ComprehensiveProductionTest:
         total_components = 0
         
         for category, tests in self.test_results.items():
-            for test_name, result in tests.items():
+            if isinstance(tests, dict):
+                for test_name, result in tests.items():
+                    total_components += 1
+                    if isinstance(result, str) and result.startswith("✅"):
+                        successful_components += 1
+            elif isinstance(tests, list):
+                # Handle list format
+                for result in tests:
+                    total_components += 1
+                    if isinstance(result, str) and result.startswith("✅"):
+                        successful_components += 1
+            else:
+                # Handle single string result
                 total_components += 1
-                if result.startswith("✅"):
+                if isinstance(tests, str) and tests.startswith("✅"):
                     successful_components += 1
         
         report = {
@@ -731,8 +752,14 @@ class ComprehensiveProductionTest:
         logger.info("\n📋 DETAILED COMPONENT TEST RESULTS:")
         for category, tests in self.test_results.items():
             logger.info(f"\n🔷 {category.replace('_', ' ').title()}:")
-            for test_name, result in tests.items():
-                logger.info(f"   {result} {test_name}")
+            if isinstance(tests, dict):
+                for test_name, result in tests.items():
+                    logger.info(f"   {result} {test_name}")
+            elif isinstance(tests, list):
+                for i, result in enumerate(tests):
+                    logger.info(f"   {result} item_{i}")
+            else:
+                logger.info(f"   {tests} {category}")
         
         # Success determination - very strict criteria
         test_passed = (
