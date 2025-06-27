@@ -4,19 +4,35 @@ metadata:
   annotations:
     run.googleapis.com/execution-environment: gen2
     run.googleapis.com/ingress: all
+    run.googleapis.com/cpu-throttling: 'false'
+    run.googleapis.com/vpc-access-connector: ''
+    run.googleapis.com/vpc-access-egress: private-ranges-only
   name: ai-agent-platform
 spec:
   template:
     metadata:
       annotations:
+        # Auto-scaling configuration
         autoscaling.knative.dev/maxScale: '100'
         autoscaling.knative.dev/minScale: '0'
+        autoscaling.knative.dev/target: '80'
+        
+        # Resource allocation
         run.googleapis.com/cpu: '2'
-        run.googleapis.com/cpu-throttling: 'false'
         run.googleapis.com/memory: 2Gi
+        run.googleapis.com/cpu-throttling: 'false'
+        
+        # Request handling
         run.googleapis.com/timeout: 900s
+        run.googleapis.com/startup-timeout: 240s
+        
+        # Security and performance
+        run.googleapis.com/execution-environment: gen2
+        run.googleapis.com/network-interfaces: '[{"network":"default","subnetwork":"default"}]'
     spec:
       containerConcurrency: 80
+      timeoutSeconds: 900
+      serviceAccountName: ai-agent-platform-sa
       containers:
       - env:
         - name: ENVIRONMENT
@@ -25,24 +41,71 @@ spec:
           value: INFO
         - name: ENABLE_PERFORMANCE_TRACKING
           value: 'true'
+        - name: ENABLE_ANALYTICS
+          value: 'true'
         - name: MAX_CONCURRENT_AGENTS
           value: '100'
+        - name: PORT
+          value: '8080'
+        - name: PYTHONUNBUFFERED
+          value: '1'
+        - name: GOOGLE_CLOUD_PROJECT
+          value: PROJECT_ID
         image: gcr.io/PROJECT_ID/ai-agent-platform:latest
+        
+        # Health checks
         livenessProbe:
           httpGet:
             path: /health
             port: 8080
+            httpHeaders:
+            - name: User-Agent
+              value: GoogleHC/1.0
           initialDelaySeconds: 60
           periodSeconds: 30
-        ports:
-        - containerPort: 8080
+          timeoutSeconds: 10
+          failureThreshold: 3
+          
         readinessProbe:
           httpGet:
             path: /health
             port: 8080
+            httpHeaders:
+            - name: User-Agent
+              value: GoogleHC/1.0
           initialDelaySeconds: 10
           periodSeconds: 5
+          timeoutSeconds: 5
+          failureThreshold: 3
+          
+        # Startup probe for faster cold starts
+        startupProbe:
+          httpGet:
+            path: /health
+            port: 8080
+          initialDelaySeconds: 10
+          periodSeconds: 10
+          timeoutSeconds: 5
+          failureThreshold: 30
+          
+        ports:
+        - containerPort: 8080
+          name: http1
+          
         resources:
           limits:
             cpu: '2'
             memory: 2Gi
+          requests:
+            cpu: '1'
+            memory: 1Gi
+            
+        # Security context
+        securityContext:
+          runAsNonRoot: true
+          runAsUser: 1000
+          allowPrivilegeEscalation: false
+          readOnlyRootFilesystem: false
+          capabilities:
+            drop:
+            - ALL

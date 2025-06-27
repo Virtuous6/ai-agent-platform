@@ -86,7 +86,7 @@ async def main():
     """Main dashboard launcher."""
     print("""
     ╔═══════════════════════════════════════════════════════════════════════════╗
-    ║                               SLACKER                                     ║
+    ║                          AI AGENT PLATFORM                               ║
     ║                         >>> INITIALIZING <<<                             ║
     ║                                                                           ║
     ║  ░▒▓█ SELF-IMPROVING AI SYSTEM MONITORING █▓▒░                           ║

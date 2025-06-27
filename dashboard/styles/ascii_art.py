@@ -20,7 +20,7 @@ ASCII_ART = {
 
     "simple_header": """
     ╔═══════════════════════════════════════════════════════════════════════════╗
-    ║                               SLACKER                                     ║
+    ║                          AI AGENT PLATFORM                               ║
     ║                         >>> MONITORING ACTIVE <<<                        ║
     ║                                                                           ║
     ║  ░▒▓█ SELF-IMPROVING AI SYSTEM STATUS █▓▒░                               ║
