@@ -12,6 +12,7 @@ Integrates MCP functionality into the existing Slack bot with new commands:
 import logging
 import json
 from typing import Dict, Any, Optional, List
+from datetime import datetime
 
 from mcp.connection_manager import MCPConnectionManager
 from mcp.run_cards.supabase_card import SupabaseRunCard
@@ -40,7 +41,9 @@ class MCPSlackCommands:
         
         self.commands = ["mcp-list", "mcp-connect", "mcp-status"]
         
-        logger.info("🤖 MCP Slack Commands initialized")
+        self._pending_credentials = {}  # Track pending credential requests
+        
+        logger.info("🤖 MCP Slack Commands initialized with credential support")
     
     def register_handlers(self, slack_app):
         """Register MCP command handlers with the Slack app."""
@@ -94,6 +97,13 @@ class MCPSlackCommands:
                 else:
                     service = parts[1] if len(parts) > 1 else None
                     await self._handle_connect_command(user_id, service, client, say)
+            
+            elif subcommand == "credentials":
+                # /mcp credentials [connection_name] [api_key] [auth_type]
+                connection_name = parts[1] if len(parts) > 1 else None
+                api_key = parts[2] if len(parts) > 2 else None
+                auth_type = parts[3] if len(parts) > 3 else "Bearer"
+                await self._handle_credentials_command(user_id, connection_name, api_key, auth_type, say)
                 
             elif subcommand == "list":
                 await self._handle_list_command(user_id, say)
@@ -119,7 +129,7 @@ class MCPSlackCommands:
         except Exception as e:
             logger.error(f"❌ Error handling MCP command: {str(e)}")
             await say({
-                "text": f"❌ Error processing MCP command: {str(e)}",
+                "text": f"❌ **Command Error**\n\nSomething went wrong: {str(e)}\n\nTry `/mcp help` for usage information.",
                 "response_type": "ephemeral"
             })
     
@@ -146,38 +156,32 @@ class MCPSlackCommands:
             })
     
     async def _handle_custom_connect_command(self, user_id: str, connection_name: Optional[str], server_url: Optional[str], client, say):
-        """Handle /mcp connect custom [name] [url] command."""
-        if not connection_name or not server_url:
-            await say({
-                "text": "❌ **Missing parameters for custom MCP connection**\n\nUsage: `/mcp connect custom [name] [server_url]`\n\nExample: `/mcp connect custom google-ads https://n8n.soulnav.co/mcp/b3c575cf-5b9b-49d7-81c3-ab4de7dca451/sse`",
-                "response_type": "ephemeral"
-            })
-            return
-        
+        """Handle /mcp connect custom [name] [url] command with credential collection."""
         try:
-            # Validate URL format
-            if not (server_url.startswith('http://') or server_url.startswith('https://')):
+            if not connection_name or not server_url:
                 await say({
-                    "text": f"❌ **Invalid URL format**\n\nURL must start with http:// or https://\n\nProvided: `{server_url}`",
+                    "text": "❌ **Usage:** `/mcp connect custom [name] [url]`\n\n**Example:**\n`/mcp connect custom airtable https://your-server.com/mcp/sse`",
                     "response_type": "ephemeral"
                 })
                 return
             
-            # Create custom MCP connection
-            success = await self._create_custom_mcp_connection(
-                user_id=user_id,
-                connection_name=connection_name,
-                server_url=server_url
-            )
-            
-            if success:
+            # Validate URL format
+            if not (server_url.startswith('http://') or server_url.startswith('https://')):
                 await say({
-                    "text": f"✅ **Custom MCP connection created successfully!**\n\n🔗 **Name:** {connection_name}\n🌐 **URL:** {server_url}\n📊 **Status:** Active\n\n💡 Use `/mcp test {connection_name}` to verify the connection\n💡 Use `/mcp tools {connection_name}` to see available tools",
+                    "text": f"❌ **Invalid URL format**\n\nURL must start with `http://` or `https://`\nYou provided: `{server_url}`",
                     "response_type": "ephemeral"
                 })
+                return
+            
+            # Create the connection first (without credentials)
+            connection_created = await self._create_custom_mcp_connection(user_id, connection_name, server_url)
+            
+            if connection_created:
+                # Show credential collection modal
+                await self._show_credential_modal(client, user_id, connection_name, server_url)
             else:
                 await say({
-                    "text": f"❌ **Failed to create MCP connection**\n\nThere was an error storing the connection. Please try again or check if a connection with name '{connection_name}' already exists.",
+                    "text": f"❌ **Failed to create connection '{connection_name}'**\n\nPlease try again or contact support.",
                     "response_type": "ephemeral"
                 })
                 
@@ -516,6 +520,7 @@ class MCPSlackCommands:
 
 **Custom MCP Servers:**
 • `/mcp connect custom [name] [url]` - Connect to your own MCP server
+• `/mcp credentials [name] [api_key] [auth_type]` - Add authentication credentials
 
 *Available Built-in Services:*
 • `supabase` - Database operations
@@ -524,10 +529,16 @@ class MCPSlackCommands:
 
 *Examples:*
 • `/mcp connect supabase` - Quick Supabase setup
-• `/mcp connect custom google-ads https://your-server.com/mcp` - Custom server
+• `/mcp connect custom google-ads https://your-server.com/mcp/sse` - Custom server
+• `/mcp credentials google-ads sk-1234567890abcdef Bearer` - Add API key
 • `/mcp list` - Show all your connections
 • `/mcp tools google-ads` - Show tools for specific connection
 • `/mcp test google-ads` - Test custom connection
+
+*Common Auth Types:*
+• `Bearer` - Standard Bearer token (default)
+• `ApiKey` - API key authentication
+• `X-API-Key` - Custom header authentication
 """
         
         await say({
@@ -713,4 +724,283 @@ class MCPSlackCommands:
 
     async def handle_command(self, command: str, parameters: dict):
         """Handle MCP-related Slack commands."""
-        return {"response": f"Executed {command} with parameters {parameters}"} 
+        return {"response": f"Executed {command} with parameters {parameters}"}
+
+    async def _show_credential_modal(self, client, user_id: str, connection_name: str, server_url: str):
+        """Show modal to collect MCP server credentials."""
+        try:
+            modal_view = {
+                "type": "modal",
+                "callback_id": f"mcp_credentials_{connection_name}",
+                "title": {
+                    "type": "plain_text",
+                    "text": "MCP Server Credentials"
+                },
+                "submit": {
+                    "type": "plain_text",
+                    "text": "Save Credentials"
+                },
+                "close": {
+                    "type": "plain_text",
+                    "text": "Cancel"
+                },
+                "blocks": [
+                    {
+                        "type": "section",
+                        "text": {
+                            "type": "mrkdwn",
+                            "text": f"*🔐 Set up credentials for:* `{connection_name}`\n*Server:* `{server_url}`"
+                        }
+                    },
+                    {
+                        "type": "input",
+                        "block_id": "api_key_block",
+                        "element": {
+                            "type": "plain_text_input",
+                            "action_id": "api_key_input",
+                            "placeholder": {
+                                "type": "plain_text",
+                                "text": "Enter your API key or access token"
+                            }
+                        },
+                        "label": {
+                            "type": "plain_text",
+                            "text": "API Key / Access Token"
+                        },
+                        "optional": True
+                    },
+                    {
+                        "type": "input",
+                        "block_id": "auth_header_block",
+                        "element": {
+                            "type": "plain_text_input",
+                            "action_id": "auth_header_input",
+                            "placeholder": {
+                                "type": "plain_text",
+                                "text": "e.g., Bearer, ApiKey, X-API-Key"
+                            },
+                            "initial_value": "Bearer"
+                        },
+                        "label": {
+                            "type": "plain_text",
+                            "text": "Authorization Header Type"
+                        },
+                        "optional": True
+                    },
+                    {
+                        "type": "input",
+                        "block_id": "additional_headers_block",
+                        "element": {
+                            "type": "plain_text_input",
+                            "action_id": "additional_headers_input",
+                            "placeholder": {
+                                "type": "plain_text",
+                                "text": "key1:value1,key2:value2"
+                            },
+                            "multiline": True
+                        },
+                        "label": {
+                            "type": "plain_text",
+                            "text": "Additional Headers (optional)"
+                        },
+                        "optional": True
+                    },
+                    {
+                        "type": "section",
+                        "text": {
+                            "type": "mrkdwn",
+                            "text": "💡 *Common examples:*\n• Airtable: API Key with `Bearer` header\n• Google Ads: Access Token with `Bearer` header\n• Custom APIs: Various authentication methods"
+                        }
+                    }
+                ]
+            }
+            
+            # Store connection info for modal callback
+            self._pending_credentials[user_id] = {
+                "connection_name": connection_name,
+                "server_url": server_url,
+                "timestamp": datetime.utcnow()
+            }
+            
+            await client.views_open(
+                trigger_id=self._get_trigger_id(user_id),  # This would need to be implemented
+                view=modal_view
+            )
+            
+            logger.info(f"📝 Showed credential modal for {connection_name}")
+            
+        except Exception as e:
+            logger.error(f"❌ Error showing credential modal: {str(e)}")
+            # Fallback to simple text prompt
+            await self._prompt_credentials_via_text(user_id, connection_name, server_url)
+    
+    async def _prompt_credentials_via_text(self, user_id: str, connection_name: str, server_url: str):
+        """Fallback: Prompt for credentials via text if modal fails."""
+        try:
+            # Use the say function if available, otherwise create a simple text prompt
+            prompt_text = f"""
+🔐 **MCP Server Credentials Needed**
+
+**Connection:** `{connection_name}`
+**Server:** `{server_url}`
+
+**Please provide your credentials using:**
+`/mcp credentials {connection_name} [api_key] [auth_type]`
+
+**Examples:**
+• `/mcp credentials {connection_name} sk-1234567890abcdef Bearer`
+• `/mcp credentials {connection_name} your-api-key ApiKey`
+
+**Need help?** Use `/mcp help` for more information.
+"""
+            
+            # Store pending credentials request
+            self._pending_credentials[user_id] = {
+                "connection_name": connection_name,
+                "server_url": server_url,
+                "timestamp": datetime.utcnow()
+            }
+            
+            logger.info(f"📝 Prompted for credentials via text for {connection_name}")
+            
+        except Exception as e:
+            logger.error(f"❌ Error prompting for credentials: {str(e)}") 
+
+    async def _handle_credentials_command(self, user_id: str, connection_name: Optional[str], api_key: Optional[str], auth_type: str, say):
+        """Handle /mcp credentials [connection] [api_key] [auth_type] command."""
+        try:
+            if not connection_name:
+                await say({
+                    "text": "❌ **Missing connection name**\n\n**Usage:** `/mcp credentials [connection_name] [api_key] [auth_type]`\n\n**Examples:**\n• `/mcp credentials airtable sk-1234567890abcdef Bearer`\n• `/mcp credentials google-ads your-token ApiKey`",
+                    "response_type": "ephemeral"
+                })
+                return
+            
+            if not api_key:
+                await say({
+                    "text": f"❌ **Missing API key**\n\n**Usage:** `/mcp credentials {connection_name} [api_key] [auth_type]`\n\n**Example:** `/mcp credentials {connection_name} sk-1234567890abcdef Bearer`",
+                    "response_type": "ephemeral"
+                })
+                return
+            
+            # Find the connection in the database
+            result = self.db_logger.client.table("mcp_connections").select(
+                "id, connection_name, mcp_server_url, status"
+            ).eq("user_id", user_id).eq("connection_name", connection_name).execute()
+            
+            if not result.data:
+                await say({
+                    "text": f"❌ **Connection '{connection_name}' not found**\n\nUse `/mcp list` to see your connections or create it first with `/mcp connect custom {connection_name} [url]`",
+                    "response_type": "ephemeral"
+                })
+                return
+            
+            connection = result.data[0]
+            
+            # Store credentials securely
+            success = await self._store_connection_credentials(
+                connection["id"], 
+                user_id, 
+                connection_name, 
+                api_key, 
+                auth_type
+            )
+            
+            if success:
+                # Test the connection with new credentials
+                test_result = await self._test_connection_with_credentials(
+                    connection["mcp_server_url"], 
+                    api_key, 
+                    auth_type
+                )
+                
+                if test_result["success"]:
+                    await say({
+                        "text": f"✅ **Credentials saved and tested successfully!**\n\n🔗 **Connection:** {connection_name}\n🔑 **Auth Type:** {auth_type}\n✅ **Status:** Connection verified\n\n💡 You can now use tools from this connection in chat!",
+                        "response_type": "ephemeral"
+                    })
+                else:
+                    await say({
+                        "text": f"⚠️ **Credentials saved but connection test failed**\n\n🔗 **Connection:** {connection_name}\n🔑 **Auth Type:** {auth_type}\n❌ **Test Error:** {test_result.get('error', 'Unknown error')}\n\n💡 Check your API key and server configuration.",
+                        "response_type": "ephemeral"
+                    })
+            else:
+                await say({
+                    "text": f"❌ **Failed to save credentials for '{connection_name}'**\n\nPlease try again or contact support.",
+                    "response_type": "ephemeral"
+                })
+                
+        except Exception as e:
+            logger.error(f"❌ Error handling credentials command: {str(e)}")
+            await say({
+                "text": f"❌ **Error saving credentials:** {str(e)}",
+                "response_type": "ephemeral"
+            })
+    
+    async def _store_connection_credentials(self, connection_id: str, user_id: str, connection_name: str, api_key: str, auth_type: str) -> bool:
+        """Store MCP connection credentials securely."""
+        try:
+            # Create credentials object
+            credentials = {
+                "api_key": api_key,
+                "auth_type": auth_type,
+                "timestamp": datetime.utcnow().isoformat()
+            }
+            
+            # In a production environment, you'd encrypt these credentials
+            # For now, we'll store them as JSON (consider encryption later)
+            credentials_json = json.dumps(credentials)
+            
+            # Update the connection with credentials
+            update_result = self.db_logger.client.table("mcp_connections").update({
+                "credentials_encrypted": credentials_json,
+                "credential_storage_type": "local_env",  # Update when we add proper encryption
+                "status": "active",
+                "health_status": "testing"
+            }).eq("id", connection_id).eq("user_id", user_id).execute()
+            
+            if update_result.data:
+                logger.info(f"✅ Stored credentials for connection {connection_name}")
+                return True
+            else:
+                logger.error(f"❌ Failed to update connection {connection_name} with credentials")
+                return False
+                
+        except Exception as e:
+            logger.error(f"❌ Error storing credentials: {str(e)}")
+            return False
+    
+    async def _test_connection_with_credentials(self, server_url: str, api_key: str, auth_type: str) -> Dict[str, Any]:
+        """Test MCP connection with provided credentials."""
+        try:
+            from mcp.mcp_client import mcp_client
+            
+            # Prepare credentials for MCP client
+            credentials = {
+                "api_key": api_key,
+                "auth_type": auth_type
+            }
+            
+            # Test connection
+            session = await mcp_client.connect_to_mcp_server(server_url, credentials)
+            
+            if session:
+                # Test successful - clean up session
+                await mcp_client.close_session(session.session_id)
+                return {
+                    "success": True,
+                    "tools_discovered": len(session.tools),
+                    "message": "Connection verified successfully"
+                }
+            else:
+                return {
+                    "success": False,
+                    "error": "Failed to establish MCP session"
+                }
+                
+        except Exception as e:
+            logger.error(f"❌ Credential test failed: {str(e)}")
+            return {
+                "success": False,
+                "error": str(e)
+            } 

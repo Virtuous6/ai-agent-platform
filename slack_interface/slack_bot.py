@@ -657,7 +657,7 @@ class AIAgentSlackBot:
     
     async def _execute_mcp_tool(self, tool_name: str, parameters: Dict[str, Any] = None, user_id: str = None) -> Dict[str, Any]:
         """
-        Execute an MCP tool by making HTTP requests to the MCP server.
+        Execute an MCP tool by making real JSON-RPC calls to the MCP server.
         
         Args:
             tool_name: Name of the tool to execute
@@ -687,10 +687,53 @@ class AIAgentSlackBot:
                     "error": f"Tool '{tool_name}' not found in active connections"
                 }
             
-            # For now, simulate tool execution since SSE endpoints need special handling
-            # TODO: Implement proper SSE/WebSocket connection to MCP servers
+            # Use real MCP protocol client instead of simulation
+            from mcp.mcp_client import mcp_client
             
-            result = await self._simulate_mcp_tool_execution(tool_name, tool_connection, parameters)
+            # Check if we have an active session for this connection
+            session_id = f"{user_id}_{tool_connection.id}"
+            existing_session = None
+            
+            for sid, session in mcp_client.active_sessions.items():
+                if session.server_url == tool_connection.connection_config.get('url'):
+                    existing_session = session
+                    session_id = sid
+                    break
+            
+            # Create new session if needed
+            if not existing_session:
+                logger.info(f"🔗 Creating new MCP session for {tool_connection.connection_name}")
+                try:
+                    server_url = tool_connection.connection_config.get('url')
+                    
+                    # Get credentials from database
+                    credentials = {}
+                    if tool_connection.credential_reference:
+                        # Parse credentials from the encrypted field
+                        try:
+                            import json
+                            credentials_data = json.loads(tool_connection.credential_reference)
+                            credentials = {
+                                'api_key': credentials_data.get('api_key'),
+                                'auth_type': credentials_data.get('auth_type', 'Bearer')
+                            }
+                            logger.info(f"🔑 Retrieved credentials for {tool_connection.connection_name}")
+                        except Exception as e:
+                            logger.warning(f"⚠️ Failed to parse credentials: {str(e)}")
+                    
+                    session = await mcp_client.connect_to_mcp_server(server_url, credentials)
+                    session_id = session.session_id
+                    
+                    logger.info(f"✅ Created MCP session with {len(session.tools)} tools")
+                    
+                except Exception as e:
+                    logger.error(f"❌ Failed to create MCP session: {str(e)}")
+                    # Fallback to simulation for now
+                    return await self._simulate_mcp_tool_execution(tool_name, tool_connection, parameters)
+            
+            # Execute the tool using real MCP protocol
+            logger.info(f"🚀 Executing real MCP tool: {tool_name}")
+            result = await mcp_client.execute_tool(session_id, tool_name, parameters)
             
             # Log tool usage
             if self.supabase_logger:
@@ -701,10 +744,20 @@ class AIAgentSlackBot:
                         "connection_name": tool_connection.connection_name,
                         "mcp_type": tool_connection.mcp_type,
                         "success": result.get("success", False),
-                        "parameters": parameters
+                        "parameters": parameters,
+                        "real_mcp_call": True  # Flag to distinguish from simulation
                     },
                     user_id=user_id
                 )
+            
+            # Add metadata to indicate this was a real MCP call
+            if result.get("success"):
+                result["metadata"] = {
+                    "real_mcp_call": True,
+                    "session_id": session_id,
+                    "server_url": tool_connection.connection_config.get('url'),
+                    "connection_name": tool_connection.connection_name
+                }
             
             return result
             

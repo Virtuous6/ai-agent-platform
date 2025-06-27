@@ -30,6 +30,7 @@ networkx>=3.2.1
 
 # Enhanced async & utilities
 tenacity>=8.2.3
+backoff>=2.2.1
 
 # Configuration Management
 pyyaml>=6.0
