@@ -1,0 +1,317 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>AI Agent Platform - Dashboard</title>
+    <link rel="stylesheet" href="{{ url_for('static', filename='css/dashboard.css') }}">
+    <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><text y='14' font-size='16'>🤖</text></svg>">
+</head>
+<body>
+    <div class="dashboard-container">
+        <!-- Header -->
+        <header class="dashboard-header">
+            <div class="header-content">
+                <h1 class="dashboard-title">
+                    <span class="icon">🤖</span>
+                    AI Agent Platform Dashboard
+                </h1>
+                <div class="header-info">
+                    <div class="connection-status" id="connectionStatus">
+                        <span class="status-dot"></span>
+                        <span class="status-text">Connecting...</span>
+                    </div>
+                    <div class="last-updated" id="lastUpdated">
+                        Last updated: Never
+                    </div>
+                </div>
+            </div>
+        </header>
+
+        <!-- Navigation Tabs -->
+        <nav class="dashboard-nav">
+            <button class="nav-tab active" data-tab="overview">📊 Overview</button>
+            <button class="nav-tab" data-tab="messages">💬 Messages</button>
+            <button class="nav-tab" data-tab="workflows">⚡ Workflows</button>
+            <button class="nav-tab" data-tab="mcp-connections">🔌 MCPs</button>
+            <button class="nav-tab" data-tab="conversations">🗣️ Conversations</button>
+            <button class="nav-tab" data-tab="costs">💰 Costs</button>
+        </nav>
+
+        <!-- Main Content -->
+        <main class="dashboard-main">
+            <!-- Overview Tab -->
+            <div class="tab-content active" id="overview">
+                <div class="metrics-grid">
+                    <!-- System Health Card -->
+                    <div class="metric-card">
+                        <div class="metric-header">
+                            <h3>System Health</h3>
+                            <span class="health-indicator" id="healthIndicator">●</span>
+                        </div>
+                        <div class="metric-value" id="healthScore">85%</div>
+                        <div class="metric-label">Overall Score</div>
+                    </div>
+
+                    <!-- Cost Cards -->
+                    <div class="metric-card">
+                        <div class="metric-header">
+                            <h3>Today's Cost</h3>
+                            <span class="icon">💰</span>
+                        </div>
+                        <div class="metric-value" id="todayCost">$0.0000</div>
+                        <div class="metric-label">Daily Spending</div>
+                    </div>
+
+                    <div class="metric-card">
+                        <div class="metric-header">
+                            <h3>Weekly Cost</h3>
+                            <span class="icon">📈</span>
+                        </div>
+                        <div class="metric-value" id="weeklyCost">$0.0000</div>
+                        <div class="metric-label">7-Day Total</div>
+                    </div>
+
+                    <!-- Activity Cards -->
+                    <div class="metric-card">
+                        <div class="metric-header">
+                            <h3>Messages</h3>
+                            <span class="icon">💬</span>
+                        </div>
+                        <div class="metric-value" id="totalMessages">0</div>
+                        <div class="metric-label">Total Count</div>
+                    </div>
+
+                    <div class="metric-card">
+                        <div class="metric-header">
+                            <h3>Active MCPs</h3>
+                            <span class="icon">🔌</span>
+                        </div>
+                        <div class="metric-value" id="activeMCPs">0</div>
+                        <div class="metric-label">Connections</div>
+                    </div>
+
+                    <div class="metric-card">
+                        <div class="metric-header">
+                            <h3>Conversations</h3>
+                            <span class="icon">🗣️</span>
+                        </div>
+                        <div class="metric-value" id="activeConversations">0</div>
+                        <div class="metric-label">Active Sessions</div>
+                    </div>
+                </div>
+
+                <!-- Recent Activity -->
+                <div class="activity-section">
+                    <h2>Recent Activity</h2>
+                    <div class="activity-grid">
+                        <div class="activity-card">
+                            <h3>Recent Messages</h3>
+                            <div class="activity-list" id="recentMessages">
+                                <div class="loading">Loading...</div>
+                            </div>
+                        </div>
+                        <div class="activity-card">
+                            <h3>Recent Workflows</h3>
+                            <div class="activity-list" id="recentWorkflows">
+                                <div class="loading">Loading...</div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Messages Tab -->
+            <div class="tab-content" id="messages">
+                <div class="tab-header">
+                    <h2>💬 Messages</h2>
+                    <div class="tab-stats" id="messagesStats">
+                        <span class="stat">Total: <strong id="messagesTotalCount">0</strong></span>
+                        <span class="stat">Success Rate: <strong id="messagesSuccessRate">0%</strong></span>
+                    </div>
+                </div>
+                <div class="data-table-container">
+                    <table class="data-table" id="messagesTable">
+                        <thead>
+                            <tr>
+                                <th>ID</th>
+                                <th>Role</th>
+                                <th>Content</th>
+                                <th>User</th>
+                                <th>Timestamp</th>
+                                <th>Tokens</th>
+                                <th>Status</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            <tr>
+                                <td colspan="7" class="loading-row">Loading messages...</td>
+                            </tr>
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+
+            <!-- Workflows Tab -->
+            <div class="tab-content" id="workflows">
+                <div class="tab-header">
+                    <h2>⚡ Workflow Runs</h2>
+                    <div class="tab-stats" id="workflowsStats">
+                        <span class="stat">Total: <strong id="workflowsTotalCount">0</strong></span>
+                        <span class="stat">Success Rate: <strong id="workflowsSuccessRate">0%</strong></span>
+                    </div>
+                </div>
+                <div class="data-table-container">
+                    <table class="data-table" id="workflowsTable">
+                        <thead>
+                            <tr>
+                                <th>ID</th>
+                                <th>Runbook</th>
+                                <th>Status</th>
+                                <th>Duration</th>
+                                <th>User</th>
+                                <th>Cost</th>
+                                <th>Agents</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            <tr>
+                                <td colspan="7" class="loading-row">Loading workflows...</td>
+                            </tr>
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+
+            <!-- MCP Connections Tab -->
+            <div class="tab-content" id="mcp-connections">
+                <div class="tab-header">
+                    <h2>🔌 MCP Connections</h2>
+                    <div class="tab-actions">
+                        <button class="btn btn-primary" id="addMCPBtn">➕ Add Connection</button>
+                    </div>
+                </div>
+                <div class="data-table-container">
+                    <table class="data-table" id="mcpTable">
+                        <thead>
+                            <tr>
+                                <th>Name</th>
+                                <th>Type</th>
+                                <th>Status</th>
+                                <th>Success Rate</th>
+                                <th>Tools</th>
+                                <th>Last Used</th>
+                                <th>Cost</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            <tr>
+                                <td colspan="7" class="loading-row">Loading connections...</td>
+                            </tr>
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+
+            <!-- Conversations Tab -->
+            <div class="tab-content" id="conversations">
+                <div class="tab-header">
+                    <h2>🗣️ Conversations</h2>
+                    <div class="tab-stats" id="conversationsStats">
+                        <span class="stat">Total: <strong id="conversationsTotalCount">0</strong></span>
+                        <span class="stat">Active: <strong id="conversationsActiveCount">0</strong></span>
+                    </div>
+                </div>
+                <div class="data-table-container">
+                    <table class="data-table" id="conversationsTable">
+                        <thead>
+                            <tr>
+                                <th>ID</th>
+                                <th>User</th>
+                                <th>Status</th>
+                                <th>Started</th>
+                                <th>Messages</th>
+                                <th>Cost</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            <tr>
+                                <td colspan="6" class="loading-row">Loading conversations...</td>
+                            </tr>
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+
+            <!-- Costs Tab -->
+            <div class="tab-content" id="costs">
+                <div class="tab-header">
+                    <h2>💰 Cost Analytics</h2>
+                </div>
+                <div class="metrics-grid">
+                    <div class="metric-card">
+                        <h3>Today's Cost</h3>
+                        <div class="metric-value" id="costTodayValue">$0.0000</div>
+                    </div>
+                    <div class="metric-card">
+                        <h3>Weekly Cost</h3>
+                        <div class="metric-value" id="costWeeklyValue">$0.0000</div>
+                    </div>
+                    <div class="metric-card">
+                        <h3>Monthly Projection</h3>
+                        <div class="metric-value" id="costMonthlyValue">$0.0000</div>
+                    </div>
+                    <div class="metric-card">
+                        <h3>Efficiency Score</h3>
+                        <div class="metric-value" id="costEfficiencyValue">78%</div>
+                    </div>
+                </div>
+                <div class="optimizations-section">
+                    <h3>Cost Optimizations</h3>
+                    <div id="optimizationsList">
+                        <div class="loading">Loading optimizations...</div>
+                    </div>
+                </div>
+            </div>
+        </main>
+    </div>
+
+    <!-- MCP Creation Modal -->
+    <div class="modal" id="mcpModal">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h3>Add New MCP Connection</h3>
+                <button class="modal-close" id="modalClose">&times;</button>
+            </div>
+            <div class="modal-body">
+                <form id="mcpForm">
+                    <div class="form-group">
+                        <label for="mcpType">Connection Type:</label>
+                        <select id="mcpType" name="mcp_type" required>
+                            <option value="">Select a type...</option>
+                        </select>
+                    </div>
+                    <div class="form-group">
+                        <label for="mcpName">Connection Name:</label>
+                        <input type="text" id="mcpName" name="connection_name" required>
+                    </div>
+                    <div class="form-group">
+                        <label for="mcpUserId">User ID:</label>
+                        <input type="text" id="mcpUserId" name="user_id" required value="web_user">
+                    </div>
+                    <div class="form-group">
+                        <label for="mcpDescription">Description:</label>
+                        <textarea id="mcpDescription" name="description" rows="3"></textarea>
+                    </div>
+                </form>
+            </div>
+            <div class="modal-footer">
+                <button type="button" class="btn btn-secondary" id="modalCancel">Cancel</button>
+                <button type="button" class="btn btn-primary" id="modalSave">Create Connection</button>
+            </div>
+        </div>
+    </div>
+
+    <script src="{{ url_for('static', filename='js/dashboard.js') }}"></script>
+</body>
+</html> 

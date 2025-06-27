@@ -27,8 +27,20 @@ class RealTimeUpdater:
             "agents": {},
             "costs": {},
             "events": {},
-            "logs": {}
+            "logs": {},
+            "messages": {},
+            "workflows": {},
+            "mcp_connections": {},
+            "conversations": {}
         }
+        
+        # Initialize Supabase data viewer
+        try:
+            from ..components.supabase_data_viewer import SupabaseDataViewer
+            self.supabase_viewer = SupabaseDataViewer(db_logger=db_logger)
+        except ImportError as e:
+            logger.warning(f"Could not import SupabaseDataViewer: {e}")
+            self.supabase_viewer = None
         
         logger.info("Real-time updater initialized")
     
@@ -54,6 +66,10 @@ class RealTimeUpdater:
                 self._update_costs(),
                 self._update_events(),
                 self._update_logs(),
+                self._update_messages(),
+                self._update_workflows(),
+                self._update_mcp_connections(),
+                self._update_conversations(),
                 return_exceptions=True
             )
             
@@ -63,6 +79,54 @@ class RealTimeUpdater:
             logger.error(f"Error getting dashboard data: {e}")
             return self.cached_data.copy()
     
+    async def _update_messages(self):
+        """Update messages data from Supabase."""
+        try:
+            if self.supabase_viewer:
+                self.cached_data["messages"] = await self.supabase_viewer.get_messages_data()
+            else:
+                self.cached_data["messages"] = {"messages": [], "total_count": 0, "error": "No Supabase viewer"}
+                
+        except Exception as e:
+            logger.error(f"Error updating messages: {e}")
+            self.cached_data["messages"] = {"messages": [], "total_count": 0, "error": str(e)}
+    
+    async def _update_workflows(self):
+        """Update workflow runs data from Supabase."""
+        try:
+            if self.supabase_viewer:
+                self.cached_data["workflows"] = await self.supabase_viewer.get_workflow_runs_data()
+            else:
+                self.cached_data["workflows"] = {"workflows": [], "total_count": 0, "error": "No Supabase viewer"}
+                
+        except Exception as e:
+            logger.error(f"Error updating workflows: {e}")
+            self.cached_data["workflows"] = {"workflows": [], "total_count": 0, "error": str(e)}
+    
+    async def _update_mcp_connections(self):
+        """Update MCP connections data from Supabase."""
+        try:
+            if self.supabase_viewer:
+                self.cached_data["mcp_connections"] = await self.supabase_viewer.get_mcp_connections_data()
+            else:
+                self.cached_data["mcp_connections"] = {"connections": [], "total_count": 0, "error": "No Supabase viewer"}
+                
+        except Exception as e:
+            logger.error(f"Error updating MCP connections: {e}")
+            self.cached_data["mcp_connections"] = {"connections": [], "total_count": 0, "error": str(e)}
+    
+    async def _update_conversations(self):
+        """Update conversations data from Supabase."""
+        try:
+            if self.supabase_viewer:
+                self.cached_data["conversations"] = await self.supabase_viewer.get_conversations_data()
+            else:
+                self.cached_data["conversations"] = {"conversations": [], "total_count": 0, "error": "No Supabase viewer"}
+                
+        except Exception as e:
+            logger.error(f"Error updating conversations: {e}")
+            self.cached_data["conversations"] = {"conversations": [], "total_count": 0, "error": str(e)}
+
     async def _update_overview(self):
         """Update system overview data."""
         try:
@@ -70,11 +134,17 @@ class RealTimeUpdater:
             system_health = await self._get_system_health()
             agent_stats = await self._get_agent_stats()
             
+            # Get real cost data from Supabase
+            cost_data = {}
+            if self.supabase_viewer:
+                cost_data = await self.supabase_viewer.get_cost_analytics_data()
+            
             self.cached_data["overview"] = {
                 "system_health": system_health,
                 "agent_ecosystem": agent_stats,
                 "improvement_status": await self._get_improvement_status(),
                 "recent_events": await self._get_recent_events(5),
+                "cost_summary": cost_data,
                 "last_updated": datetime.utcnow().isoformat()
             }
             
@@ -94,14 +164,22 @@ class RealTimeUpdater:
             logger.error(f"Error updating agents: {e}")
     
     async def _update_costs(self):
-        """Update cost data."""
+        """Update cost data with real Supabase data."""
         try:
-            self.cached_data["costs"] = {
-                "daily_cost": await self._get_daily_cost(),
-                "efficiency_score": 0.78,
-                "optimizations": await self._get_cost_optimizations(),
-                "last_updated": datetime.utcnow().isoformat()
-            }
+            if self.supabase_viewer:
+                cost_data = await self.supabase_viewer.get_cost_analytics_data()
+                self.cached_data["costs"] = {
+                    **cost_data,
+                    "last_updated": datetime.utcnow().isoformat()
+                }
+            else:
+                self.cached_data["costs"] = {
+                    "daily_cost": 0.0,
+                    "efficiency_score": 0.78,
+                    "optimizations": [],
+                    "error": "No Supabase viewer",
+                    "last_updated": datetime.utcnow().isoformat()
+                }
             
         except Exception as e:
             logger.error(f"Error updating costs: {e}")
@@ -174,44 +252,48 @@ class RealTimeUpdater:
             return {}
     
     async def _get_improvement_status(self) -> Dict[str, Any]:
-        """Get improvement status."""
+        """Get improvement status from Supabase tables."""
         try:
             if self.db_logger:
                 # Get improvement task statistics
                 thirty_days_ago = (datetime.utcnow() - timedelta(days=30)).isoformat()
                 
                 # Count active tasks
-                active_result = self.db_logger.client.table("improvement_tasks").select(
-                    "id"
-                ).in_("status", ["pending", "running"]).execute()
-                
-                # Get completed tasks with ROI
-                completed_result = self.db_logger.client.table("improvement_tasks").select(
-                    "roi", "status"
-                ).eq("status", "completed").gte("completed_at", thirty_days_ago).execute()
-                
-                # Count patterns discovered (from workflow_runs)
-                patterns_result = self.db_logger.client.table("workflow_runs").select(
-                    "pattern_signature"
-                ).is_not("pattern_signature", "null").gte("created_at", thirty_days_ago).execute()
-                
-                # Calculate metrics
-                active_tasks = len(active_result.data) if active_result.data else 0
-                
-                roi_values = [r.get("roi", 0) for r in (completed_result.data or []) if r.get("roi", 0) > 0]
-                avg_roi = sum(roi_values) / len(roi_values) if roi_values else 1.0
-                
-                unique_patterns = len(set(r.get("pattern_signature") for r in (patterns_result.data or []) 
-                                        if r.get("pattern_signature")))
-                
-                optimizations_applied = len(completed_result.data) if completed_result.data else 0
-                
-                return {
-                    "active_tasks": active_tasks,
-                    "roi_last_30_days": round(avg_roi, 2),
-                    "patterns_discovered": unique_patterns,
-                    "optimizations_applied": optimizations_applied
-                }
+                try:
+                    active_result = self.db_logger.client.table("improvement_tasks").select(
+                        "id"
+                    ).in_("status", ["pending", "running"]).execute()
+                    
+                    # Get completed tasks with ROI
+                    completed_result = self.db_logger.client.table("improvement_tasks").select(
+                        "roi", "status"
+                    ).eq("status", "completed").gte("completed_at", thirty_days_ago).execute()
+                    
+                    # Count patterns discovered (from workflow_runs)
+                    patterns_result = self.db_logger.client.table("runbook_executions").select(
+                        "runbook_name"
+                    ).gte("started_at", thirty_days_ago).execute()
+                    
+                    # Calculate metrics
+                    active_tasks = len(active_result.data) if active_result.data else 0
+                    
+                    roi_values = [r.get("roi", 0) for r in (completed_result.data or []) if r.get("roi", 0) > 0]
+                    avg_roi = sum(roi_values) / len(roi_values) if roi_values else 1.0
+                    
+                    unique_runbooks = len(set(r.get("runbook_name") for r in (patterns_result.data or []) 
+                                            if r.get("runbook_name")))
+                    
+                    optimizations_applied = len(completed_result.data) if completed_result.data else 0
+                    
+                    return {
+                        "active_tasks": active_tasks,
+                        "roi_last_30_days": round(avg_roi, 2),
+                        "patterns_discovered": unique_runbooks,
+                        "optimizations_applied": optimizations_applied
+                    }
+                    
+                except Exception as e:
+                    logger.warning(f"Could not fetch improvement data from Supabase: {e}")
             
             return {"active_tasks": 0, "roi_last_30_days": 1.0, "patterns_discovered": 0, "optimizations_applied": 0}
             
@@ -255,42 +337,8 @@ class RealTimeUpdater:
             "cost_efficiency": 0.76
         }
     
-    async def _get_daily_cost(self) -> float:
-        """Get today's cost."""
-        try:
-            if self.db_logger:
-                # Query today's cost from daily_token_summary
-                today = str(datetime.utcnow().date())
-                result = self.db_logger.client.table("daily_token_summary").select(
-                    "total_cost"
-                ).eq("date", today).execute()
-                
-                if result.data and result.data[0]:
-                    return result.data[0].get("total_cost", 0.0)
-                
-                # Fallback to summing from token_usage
-                token_result = self.db_logger.client.table("token_usage").select(
-                    "estimated_cost"
-                ).gte("created_at", today).execute()
-                
-                if token_result.data:
-                    return sum(r.get("estimated_cost", 0) for r in token_result.data)
-            
-            return 0.0
-            
-        except Exception as e:
-            logger.error(f"Error getting daily cost: {e}")
-            return 0.0
-    
-    async def _get_cost_optimizations(self) -> List[Dict[str, Any]]:
-        """Get cost optimization opportunities."""
-        return [
-            {"title": "Optimize prompt compression", "potential_savings": 0.45, "priority": 5},
-            {"title": "Use GPT-3.5 for simple queries", "potential_savings": 0.32, "priority": 4}
-        ]
-    
     async def _get_recent_events(self, limit: int = 20) -> List[Dict[str, Any]]:
-        """Get recent events."""
+        """Get recent events from Supabase or generate synthetic data."""
         try:
             events = []
             
@@ -311,9 +359,32 @@ class RealTimeUpdater:
                                 "source": event.get("source", "system")
                             })
                 except:
-                                pass  # Fall back to empty events
+                    pass  # Fall back to messages and conversations
+            
+            # If no events table, generate from other tables
+            if not events and self.supabase_viewer:
+                try:
+                    # Get recent messages as events
+                    msg_data = await self.supabase_viewer.get_messages_data(10)
+                    for msg in msg_data.get("messages", []):
+                        events.append({
+                            "timestamp": msg.get("timestamp", ""),
+                            "type": f"message_{msg.get('role', 'unknown')}",
+                            "source": "conversation"
+                        })
+                    
+                    # Get recent workflows as events
+                    wf_data = await self.supabase_viewer.get_workflow_runs_data(5)
+                    for wf in wf_data.get("workflows", []):
+                        events.append({
+                            "timestamp": wf.get("started_at", ""),
+                            "type": f"workflow_{wf.get('status', 'unknown')}",
+                            "source": "orchestrator"
+                        })
+                except:
+                    pass
         
-        # Generate events from actual data if none from DB
+            # Generate synthetic events if still none
             if not events:
                 now = datetime.utcnow()
                 events = [
@@ -322,7 +393,7 @@ class RealTimeUpdater:
                     {"timestamp": (now - timedelta(minutes=5)).isoformat(), "type": "improvement_applied", "source": "improvement"}
                 ]
             
-            return events
+            return sorted(events, key=lambda x: x.get("timestamp", ""), reverse=True)[:limit]
             
         except Exception as e:
             logger.error(f"Error getting events: {e}")
@@ -359,7 +430,7 @@ class RealTimeUpdater:
                             logs.append({
                                 "timestamp": conv.get("started_at", ""),
                                 "level": "INFO",
-                                "message": f"Conversation {conv.get('id', 'unknown')} - {conv.get('status', 'active')}",
+                                "message": f"Conversation {conv.get('id', 'unknown')[:8]} - {conv.get('status', 'active')}",
                                 "source": "conversation"
                             })
                     

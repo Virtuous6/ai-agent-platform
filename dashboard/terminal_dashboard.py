@@ -200,6 +200,10 @@ class TerminalDashboard:
             ("3", "Costs", "costs"),
             ("4", "Events", "events"),
             ("5", "Logs", "logs"),
+            ("6", "Messages", "messages"),
+            ("7", "Workflows", "workflows"),
+            ("8", "MCPs", "mcp_connections"),
+            ("9", "Convos", "conversations"),
             ("Q", "Quit", "quit")
         ]
         
@@ -226,6 +230,14 @@ class TerminalDashboard:
             self._draw_events_view(stdscr, start_y, max_lines)
         elif self.current_view == "logs":
             self._draw_logs_view(stdscr, start_y, max_lines)
+        elif self.current_view == "messages":
+            self._draw_messages_view(stdscr, start_y, max_lines)
+        elif self.current_view == "workflows":
+            self._draw_workflows_view(stdscr, start_y, max_lines)
+        elif self.current_view == "mcp_connections":
+            self._draw_mcp_connections_view(stdscr, start_y, max_lines)
+        elif self.current_view == "conversations":
+            self._draw_conversations_view(stdscr, start_y, max_lines)
     
     def _draw_overview(self, stdscr, start_y, max_lines):
         """Draw system overview."""
@@ -248,28 +260,40 @@ class TerminalDashboard:
         total_configs = agents_data.get("total_configurations", 0)
         lines.append(f"║ Active Agents:     {active_count:3d} / {total_configs:4d}                     ║")
         
-        # Cost Efficiency
-        cost_efficiency = data.get("system_health", {}).get("cost_efficiency", 0.0)
+        # Real Cost Data from Supabase
+        cost_data = data.get("cost_summary", {})
+        today_cost = cost_data.get("today_cost", 0.0)
+        weekly_cost = cost_data.get("weekly_cost", 0.0)
+        cost_efficiency = cost_data.get("efficiency_score", 0.0)
+        
+        lines.append(f"║ Today's Cost:      ${today_cost:>8.4f}                            ║")
+        lines.append(f"║ Weekly Cost:       ${weekly_cost:>8.4f}                            ║")
+        
         cost_status = self._get_status_indicator(cost_efficiency)
         lines.append(f"║ Cost Efficiency:   {cost_status} {cost_efficiency:.1%}                           ║")
         
         # Recent Improvements
         improvements = data.get("improvement_status", {})
         roi = improvements.get("roi_last_30_days", 0.0)
+        patterns = improvements.get("patterns_discovered", 0)
         lines.append(f"║ ROI (30 days):     {roi:.2f}x                                  ║")
+        lines.append(f"║ Patterns Found:    {patterns:3d}                                    ║")
         
         lines.extend([
             "╠════════════════════════════════════════════════════════════════════╣",
             "║                            RECENT ACTIVITY                        ║",
-            "╚════════════════════════════════════════════════════════════════════╝"
+            "╠════════════════════════════════════════════════════════════════════╣"
         ])
         
         # Recent events
         events = data.get("recent_events", [])
         for event in events[:5]:  # Show last 5 events
-            timestamp = event.get("timestamp", "")[:19]  # Remove microseconds
-            event_type = event.get("type", "unknown")
-            lines.append(f"  {timestamp} - {event_type}")
+            timestamp = event.get("timestamp", "")[:16]  # Show more of timestamp
+            event_type = event.get("type", "unknown")[:20]
+            source = event.get("source", "system")[:8]
+            lines.append(f"║ {timestamp} │ {event_type:<20} │ {source:<8} ║")
+        
+        lines.append("╚════════════════════════════════════════════════════════════════════╝")
         
         # Draw lines
         for i, line in enumerate(lines[:max_lines]):
@@ -452,6 +476,17 @@ class TerminalDashboard:
             self.current_view = "events"
         elif key == ord('5'):
             self.current_view = "logs"
+        elif key == ord('6'):
+            self.current_view = "messages"
+        elif key == ord('7'):
+            self.current_view = "workflows"
+        elif key == ord('8'):
+            self.current_view = "mcp_connections"
+        elif key == ord('9'):
+            self.current_view = "conversations"
+        elif key == ord('a') or key == ord('A'):
+            if self.current_view == "mcp_connections":
+                self._show_add_mcp_dialog()
         elif key == ord('r') or key == ord('R'):
             # Force refresh
             asyncio.create_task(self._refresh_data())
@@ -527,4 +562,252 @@ class TerminalDashboard:
     
     async def get_api_data(self) -> Dict[str, Any]:
         """Get dashboard data in API format for AI consumption."""
-        return await self.updater.get_all_data() if self.updater else {} 
+        return await self.updater.get_all_data() if self.updater else {}
+
+    def _draw_messages_view(self, stdscr, start_y, max_lines):
+        """Draw messages from Supabase."""
+        data = self.data_cache.get("messages", {})
+        
+        lines = [
+            "╔════════════════════════════════════════════════════════════════════╗",
+            "║                          RECENT MESSAGES                          ║",
+            "╠════════════════════════════════════════════════════════════════════╣"
+        ]
+        
+        # Summary stats
+        total_count = data.get("total_count", 0)
+        success_rate = data.get("success_rate", 0.0)
+        avg_tokens = data.get("avg_tokens", 0.0)
+        
+        lines.extend([
+            f"║ Total Messages: {total_count:<8} │ Success Rate: {success_rate:>6.1f}% │ Avg Tokens: {avg_tokens:>6.0f} ║",
+            "╠════════════════════════════════════════════════════════════════════╣",
+            "║ ID      │ Role      │ Content Preview           │ User       │ Time  ║",
+            "╠════════════════════════════════════════════════════════════════════╣"
+        ])
+        
+        # Messages
+        messages = data.get("messages", [])
+        for msg in messages[:max_lines-8]:
+            msg_id = msg.get("id", "unknown")[:7]
+            role = msg.get("role", "unknown")[:8]
+            content = msg.get("content", "")[:25]
+            user_id = msg.get("user_id", "unknown")[:10]
+            timestamp = msg.get("timestamp", "N/A")[:8]
+            error = msg.get("error", "")
+            
+            # Color code by role and errors
+            color = curses.color_pair(6)
+            if error:
+                color = curses.color_pair(2)  # Red for errors
+            elif role == "assistant":
+                color = curses.color_pair(1)  # Green for assistant
+            elif role == "user":
+                color = curses.color_pair(4)  # Cyan for user
+            
+            line = f"║ {msg_id:<7} │ {role:<8} │ {content:<25} │ {user_id:<10} │ {timestamp:<5} ║"
+            lines.append((line, color))
+        
+        lines.append(("╚════════════════════════════════════════════════════════════════════╝", curses.color_pair(6)))
+        
+        # Draw lines
+        for i, line_data in enumerate(lines[:max_lines]):
+            if start_y + i < curses.LINES - 1:
+                if isinstance(line_data, tuple):
+                    line, color = line_data
+                else:
+                    line, color = line_data, curses.color_pair(6)
+                stdscr.addstr(start_y + i, 0, line[:curses.COLS-1], color)
+    
+    def _draw_workflows_view(self, stdscr, start_y, max_lines):
+        """Draw workflow runs from Supabase."""
+        data = self.data_cache.get("workflows", {})
+        
+        lines = [
+            "╔════════════════════════════════════════════════════════════════════╗",
+            "║                         WORKFLOW RUNS                             ║",
+            "╠════════════════════════════════════════════════════════════════════╣"
+        ]
+        
+        # Summary stats
+        total_count = data.get("total_count", 0)
+        success_rate = data.get("success_rate", 0.0)
+        avg_cost = data.get("avg_cost", 0.0)
+        
+        lines.extend([
+            f"║ Total Runs: {total_count:<8} │ Success Rate: {success_rate:>6.1f}% │ Avg Cost: ${avg_cost:>8.4f} ║",
+            "╠════════════════════════════════════════════════════════════════════╣",
+            "║ ID      │ Runbook        │ Status    │ Duration │ User       │ Cost   ║",
+            "╠════════════════════════════════════════════════════════════════════╣"
+        ])
+        
+        # Workflows
+        workflows = data.get("workflows", [])
+        for wf in workflows[:max_lines-8]:
+            wf_id = wf.get("id", "unknown")[:7]
+            runbook = wf.get("runbook_name", "unknown")[:12]
+            status = wf.get("status", "unknown")[:8]
+            duration = wf.get("duration", "N/A")[:8]
+            user_id = wf.get("user_id", "unknown")[:10]
+            cost = wf.get("cost", "$0.0000")[:7]
+            
+            # Color code by status
+            color = curses.color_pair(6)
+            if status == "completed":
+                color = curses.color_pair(1)  # Green for completed
+            elif status == "failed":
+                color = curses.color_pair(2)  # Red for failed
+            elif status == "running":
+                color = curses.color_pair(3)  # Yellow for running
+            
+            line = f"║ {wf_id:<7} │ {runbook:<12} │ {status:<8} │ {duration:<8} │ {user_id:<10} │ {cost:<6} ║"
+            lines.append((line, color))
+        
+        lines.append(("╚════════════════════════════════════════════════════════════════════╝", curses.color_pair(6)))
+        
+        # Draw lines
+        for i, line_data in enumerate(lines[:max_lines]):
+            if start_y + i < curses.LINES - 1:
+                if isinstance(line_data, tuple):
+                    line, color = line_data
+                else:
+                    line, color = line_data, curses.color_pair(6)
+                stdscr.addstr(start_y + i, 0, line[:curses.COLS-1], color)
+    
+    def _draw_mcp_connections_view(self, stdscr, start_y, max_lines):
+        """Draw MCP connections from Supabase."""
+        data = self.data_cache.get("mcp_connections", {})
+        
+        lines = [
+            "╔════════════════════════════════════════════════════════════════════╗",
+            "║                        MCP CONNECTIONS                            ║",
+            "╠════════════════════════════════════════════════════════════════════╣"
+        ]
+        
+        # Summary stats
+        total_count = data.get("total_count", 0)
+        active_count = data.get("active_count", 0)
+        total_executions = data.get("total_executions", 0)
+        
+        lines.extend([
+            f"║ Total: {total_count:<8} │ Active: {active_count:<8} │ Total Executions: {total_executions:<12} ║",
+            "╠════════════════════════════════════════════════════════════════════╣",
+            "║ Name          │ Type      │ Status  │ Success │ Tools │ Last Used  ║",
+            "╠════════════════════════════════════════════════════════════════════╣"
+        ])
+        
+        # Connections
+        connections = data.get("connections", [])
+        for conn in connections[:max_lines-8]:
+            name = conn.get("name", "unknown")[:12]
+            conn_type = conn.get("type", "unknown")[:8]
+            status = conn.get("status", "unknown")[:6]
+            success_rate = conn.get("success_rate", "N/A")[:6]
+            tools_count = str(conn.get("tools_count", 0))[:4]
+            last_used = conn.get("last_used", "N/A")[:10]
+            
+            # Color code by status
+            color = curses.color_pair(6)
+            if status == "active":
+                color = curses.color_pair(1)  # Green for active
+            elif status == "error":
+                color = curses.color_pair(2)  # Red for error
+            elif status == "inactive":
+                color = curses.color_pair(3)  # Yellow for inactive
+            
+            line = f"║ {name:<12} │ {conn_type:<8} │ {status:<6} │ {success_rate:<6} │ {tools_count:<4} │ {last_used:<10} ║"
+            lines.append((line, color))
+        
+        lines.extend([
+            ("╠════════════════════════════════════════════════════════════════════╣", curses.color_pair(6)),
+            ("║ Press 'A' to add new MCP connection                               ║", curses.color_pair(5)),
+            ("╚════════════════════════════════════════════════════════════════════╝", curses.color_pair(6))
+        ])
+        
+        # Draw lines
+        for i, line_data in enumerate(lines[:max_lines]):
+            if start_y + i < curses.LINES - 1:
+                if isinstance(line_data, tuple):
+                    line, color = line_data
+                else:
+                    line, color = line_data, curses.color_pair(6)
+                stdscr.addstr(start_y + i, 0, line[:curses.COLS-1], color)
+    
+    def _draw_conversations_view(self, stdscr, start_y, max_lines):
+        """Draw conversations from Supabase."""
+        data = self.data_cache.get("conversations", {})
+        
+        lines = [
+            "╔════════════════════════════════════════════════════════════════════╗",
+            "║                          CONVERSATIONS                            ║",
+            "╠════════════════════════════════════════════════════════════════════╣"
+        ]
+        
+        # Summary stats
+        total_count = data.get("total_count", 0)
+        active_count = data.get("active_count", 0)
+        avg_messages = data.get("avg_messages", 0.0)
+        
+        lines.extend([
+            f"║ Total: {total_count:<8} │ Active: {active_count:<8} │ Avg Messages: {avg_messages:>8.1f} ║",
+            "╠════════════════════════════════════════════════════════════════════╣",
+            "║ ID      │ User       │ Status  │ Started    │ Messages │ Cost     ║",
+            "╠════════════════════════════════════════════════════════════════════╣"
+        ])
+        
+        # Conversations
+        conversations = data.get("conversations", [])
+        for conv in conversations[:max_lines-8]:
+            conv_id = conv.get("id", "unknown")[:7]
+            user_id = conv.get("user_id", "unknown")[:10]
+            status = conv.get("status", "unknown")[:6]
+            started = conv.get("started_at", "N/A")[:10]
+            messages = str(conv.get("total_messages", 0))[:7]
+            cost = conv.get("total_cost", "$0.0000")[:8]
+            
+            # Color code by status
+            color = curses.color_pair(6)
+            if status == "active":
+                color = curses.color_pair(1)  # Green for active
+            elif status == "completed":
+                color = curses.color_pair(4)  # Cyan for completed
+            
+            line = f"║ {conv_id:<7} │ {user_id:<10} │ {status:<6} │ {started:<10} │ {messages:<7} │ {cost:<8} ║"
+            lines.append((line, color))
+        
+        lines.append(("╚════════════════════════════════════════════════════════════════════╝", curses.color_pair(6)))
+        
+        # Draw lines
+        for i, line_data in enumerate(lines[:max_lines]):
+            if start_y + i < curses.LINES - 1:
+                if isinstance(line_data, tuple):
+                    line, color = line_data
+                else:
+                    line, color = line_data, curses.color_pair(6)
+                stdscr.addstr(start_y + i, 0, line[:curses.COLS-1], color)
+    
+    def _show_add_mcp_dialog(self):
+        """Show dialog for adding new MCP connection."""
+        try:
+            # Get available MCP types
+            if not hasattr(self.updater, 'supabase_viewer') or not self.updater.supabase_viewer:
+                self._show_message("Error: No Supabase connection available")
+                return
+            
+            # Show a simple message for now - in a real implementation, 
+            # you'd create a proper dialog with input fields
+            self._show_message("MCP Creation: Press 'M' to open MCP creation menu (coming soon!)")
+            
+        except Exception as e:
+            self._show_message(f"Error showing MCP dialog: {e}")
+    
+    def _show_message(self, message: str):
+        """Show a temporary message on screen."""
+        try:
+            if self.screen:
+                # Save current content
+                self.screen.addstr(curses.LINES - 3, 0, f"INFO: {message}"[:curses.COLS-1], curses.color_pair(4))
+                self.screen.refresh()
+                time.sleep(2)  # Show message for 2 seconds
+        except Exception as e:
+            logger.error(f"Error showing message: {e}") 
