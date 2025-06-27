@@ -175,12 +175,49 @@ class RealTimeUpdater:
     
     async def _get_improvement_status(self) -> Dict[str, Any]:
         """Get improvement status."""
-        return {
-            "active_tasks": 3,
-            "roi_last_30_days": 1.47,
-            "patterns_discovered": 8,
-            "optimizations_applied": 15
-        }
+        try:
+            if self.db_logger:
+                # Get improvement task statistics
+                thirty_days_ago = (datetime.utcnow() - timedelta(days=30)).isoformat()
+                
+                # Count active tasks
+                active_result = self.db_logger.client.table("improvement_tasks").select(
+                    "id"
+                ).in_("status", ["pending", "running"]).execute()
+                
+                # Get completed tasks with ROI
+                completed_result = self.db_logger.client.table("improvement_tasks").select(
+                    "roi", "status"
+                ).eq("status", "completed").gte("completed_at", thirty_days_ago).execute()
+                
+                # Count patterns discovered (from workflow_runs)
+                patterns_result = self.db_logger.client.table("workflow_runs").select(
+                    "pattern_signature"
+                ).is_not("pattern_signature", "null").gte("created_at", thirty_days_ago).execute()
+                
+                # Calculate metrics
+                active_tasks = len(active_result.data) if active_result.data else 0
+                
+                roi_values = [r.get("roi", 0) for r in (completed_result.data or []) if r.get("roi", 0) > 0]
+                avg_roi = sum(roi_values) / len(roi_values) if roi_values else 1.0
+                
+                unique_patterns = len(set(r.get("pattern_signature") for r in (patterns_result.data or []) 
+                                        if r.get("pattern_signature")))
+                
+                optimizations_applied = len(completed_result.data) if completed_result.data else 0
+                
+                return {
+                    "active_tasks": active_tasks,
+                    "roi_last_30_days": round(avg_roi, 2),
+                    "patterns_discovered": unique_patterns,
+                    "optimizations_applied": optimizations_applied
+                }
+            
+            return {"active_tasks": 0, "roi_last_30_days": 1.0, "patterns_discovered": 0, "optimizations_applied": 0}
+            
+        except Exception as e:
+            logger.error(f"Error getting improvement status: {e}")
+            return {"active_tasks": 0, "roi_last_30_days": 1.0, "patterns_discovered": 0, "optimizations_applied": 0}
     
     async def _get_active_agents(self) -> List[Dict[str, Any]]:
         """Get active agents list."""
@@ -222,9 +259,24 @@ class RealTimeUpdater:
         """Get today's cost."""
         try:
             if self.db_logger:
-                # Would query cost analytics from Supabase
-                pass
-            return 2.47  # Mock value
+                # Query today's cost from daily_token_summary
+                today = str(datetime.utcnow().date())
+                result = self.db_logger.client.table("daily_token_summary").select(
+                    "total_cost"
+                ).eq("date", today).execute()
+                
+                if result.data and result.data[0]:
+                    return result.data[0].get("total_cost", 0.0)
+                
+                # Fallback to summing from token_usage
+                token_result = self.db_logger.client.table("token_usage").select(
+                    "estimated_cost"
+                ).gte("created_at", today).execute()
+                
+                if token_result.data:
+                    return sum(r.get("estimated_cost", 0) for r in token_result.data)
+            
+            return 0.0
             
         except Exception as e:
             logger.error(f"Error getting daily cost: {e}")

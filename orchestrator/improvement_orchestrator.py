@@ -1022,6 +1022,34 @@ Create a comprehensive improvement plan with specific tasks, priorities, and exp
         if len(self.improvement_roi_tracking[improvement_type]) > 50:
             self.improvement_roi_tracking[improvement_type] = \
                 self.improvement_roi_tracking[improvement_type][-50:]
+        
+        # Save to improvement_tasks table
+        if self.db_logger:
+            try:
+                task_data = {
+                    "task_id": task.id,
+                    "agent_type": task.agent_type,
+                    "method_name": task.method_name,
+                    "priority": task.priority.value,
+                    "cycle_type": task.cycle.value,
+                    "parameters": task.parameters,
+                    "started_at": result.created_at.isoformat(),
+                    "completed_at": datetime.utcnow().isoformat(),
+                    "duration_ms": int(result.duration.total_seconds() * 1000),
+                    "status": "completed",
+                    "success": True,
+                    "actual_benefit": result.actual_benefit,
+                    "roi": result.roi,
+                    "confidence": result.confidence,
+                    "metrics_before": result.metrics_before,
+                    "metrics_after": result.metrics_after
+                }
+                
+                self.db_logger.client.table("improvement_tasks").insert(task_data).execute()
+                logger.debug(f"Saved successful improvement task {task.id} to database")
+                
+            except Exception as e:
+                logger.warning(f"Could not save improvement task to database: {e}")
 
     async def _track_improvement_failure(self, task: ImprovementTask, result: ImprovementResult):
         """Track failed improvement for learning."""
@@ -1034,6 +1062,32 @@ Create a comprehensive improvement plan with specific tasks, priorities, and exp
             )
         
         logger.warning(f"Improvement failure tracked for {agent_type}: {result.error_message}")
+        
+        # Save to improvement_tasks table
+        if self.db_logger:
+            try:
+                task_data = {
+                    "task_id": task.id,
+                    "agent_type": task.agent_type,
+                    "method_name": task.method_name,
+                    "priority": task.priority.value,
+                    "cycle_type": task.cycle.value,
+                    "parameters": task.parameters,
+                    "started_at": result.created_at.isoformat(),
+                    "completed_at": datetime.utcnow().isoformat(),
+                    "duration_ms": int(result.duration.total_seconds() * 1000),
+                    "status": "failed",
+                    "success": False,
+                    "error_message": result.error_message,
+                    "roi": -1.0,
+                    "confidence": 0.0
+                }
+                
+                self.db_logger.client.table("improvement_tasks").insert(task_data).execute()
+                logger.debug(f"Saved failed improvement task {task.id} to database")
+                
+            except Exception as e:
+                logger.warning(f"Could not save failed improvement task to database: {e}")
 
     async def _update_improvement_metrics(self):
         """Update overall improvement metrics and ROI tracking."""

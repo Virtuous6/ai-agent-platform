@@ -930,7 +930,84 @@ Provide the compressed prompt and analysis:"""
         Returns:
             Aggregated cost data
         """
-        # For now, return synthetic data. In production, this would query Supabase
+        # Query real data from Supabase
+        if self.db_logger:
+            try:
+                from_date = (datetime.utcnow() - timedelta(days=days_back)).date().isoformat()
+                
+                # Get token usage data
+                token_result = self.db_logger.client.table("token_usage").select(
+                    "agent_type", "model_used", "total_tokens", "estimated_cost", "created_at"
+                ).gte("created_at", from_date).execute()
+                
+                # Get daily summaries
+                daily_result = self.db_logger.client.table("daily_token_summary").select(
+                    "date", "total_tokens", "total_cost", "request_count", "agent_breakdown", "model_breakdown"
+                ).gte("date", from_date).execute()
+                
+                # Calculate metrics from real data
+                total_cost = sum(r.get("estimated_cost", 0) for r in token_result.data) if token_result.data else 0
+                total_tokens = sum(r.get("total_tokens", 0) for r in token_result.data) if token_result.data else 0
+                total_requests = len(token_result.data) if token_result.data else 0
+                
+                # Build agent breakdown
+                agent_breakdown = {}
+                for record in (token_result.data or []):
+                    agent = record.get("agent_type", "unknown")
+                    if agent not in agent_breakdown:
+                        agent_breakdown[agent] = {"cost": 0, "tokens": 0, "requests": 0}
+                    agent_breakdown[agent]["cost"] += record.get("estimated_cost", 0)
+                    agent_breakdown[agent]["tokens"] += record.get("total_tokens", 0)
+                    agent_breakdown[agent]["requests"] += 1
+                
+                # Build model breakdown
+                model_breakdown = {}
+                for record in (token_result.data or []):
+                    model = record.get("model_used", "unknown")
+                    if model not in model_breakdown:
+                        model_breakdown[model] = {"cost": 0, "tokens": 0, "requests": 0}
+                    model_breakdown[model]["cost"] += record.get("estimated_cost", 0)
+                    model_breakdown[model]["tokens"] += record.get("total_tokens", 0)
+                    model_breakdown[model]["requests"] += 1
+                
+                # Build daily costs
+                daily_costs = {}
+                for record in (daily_result.data or []):
+                    date = record.get("date", "")
+                    daily_costs[date] = record.get("total_cost", 0)
+                
+                # Calculate trends
+                if daily_result.data and len(daily_result.data) > 1:
+                    costs = [r.get("total_cost", 0) for r in sorted(daily_result.data, key=lambda x: x.get("date", ""))]
+                    cost_trend = "increasing" if costs[-1] > costs[0] else "decreasing" if costs[-1] < costs[0] else "stable"
+                    
+                    tokens = [r.get("total_tokens", 0) for r in sorted(daily_result.data, key=lambda x: x.get("date", ""))]
+                    usage_trend = "increasing" if tokens[-1] > tokens[0] else "decreasing" if tokens[-1] < tokens[0] else "stable"
+                else:
+                    cost_trend = "stable"
+                    usage_trend = "stable"
+                
+                return {
+                    "total_cost": total_cost,
+                    "total_tokens": total_tokens,
+                    "total_requests": total_requests,
+                    "avg_cost_per_request": total_cost / max(total_requests, 1),
+                    "avg_tokens_per_request": total_tokens / max(total_requests, 1),
+                    "cost_per_token": total_cost / max(total_tokens, 1),
+                    "agent_breakdown": agent_breakdown,
+                    "model_breakdown": model_breakdown,
+                    "daily_costs": daily_costs,
+                    "trends": {
+                        "cost_trend": cost_trend,
+                        "usage_trend": usage_trend
+                    }
+                }
+                
+            except Exception as e:
+                logger.error(f"Error querying cost data from Supabase: {e}")
+                # Fall back to in-memory metrics
+        
+        # Fallback to in-memory metrics if DB not available
         total_cost = sum(metrics.total_cost for metrics in self.cost_metrics.values())
         total_tokens = sum(metrics.total_tokens for metrics in self.cost_metrics.values())
         total_requests = sum(metrics.total_requests for metrics in self.cost_metrics.values())

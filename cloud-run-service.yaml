@@ -35,6 +35,7 @@ spec:
       serviceAccountName: ai-agent-platform-sa
       containers:
       - env:
+        # Non-sensitive configuration
         - name: ENVIRONMENT
           value: production
         - name: LOG_LEVEL
@@ -51,6 +52,29 @@ spec:
           value: '1'
         - name: GOOGLE_CLOUD_PROJECT
           value: PROJECT_ID
+          
+        # Secrets from Google Secret Manager
+        - name: OPENAI_API_KEY
+          valueFrom:
+            secretKeyRef:
+              name: openai-api-key
+              version: latest
+        - name: SLACK_BOT_TOKEN
+          valueFrom:
+            secretKeyRef:
+              name: slack-bot-token
+              version: latest
+        - name: SUPABASE_URL
+          valueFrom:
+            secretKeyRef:
+              name: supabase-url
+              version: latest
+        - name: SUPABASE_KEY
+          valueFrom:
+            secretKeyRef:
+              name: supabase-key
+              version: latest
+              
         image: gcr.io/PROJECT_ID/ai-agent-platform:latest
         
         # Health checks

@@ -786,13 +786,37 @@ class AIAgentSlackBot:
                 logger.warning(f"Error getting activity metrics: {str(e)}")
                 metrics["recent_activity"] = {"system_active": True, "conversations_today": 0}
             
-            # Mock improvements for now
-            metrics["improvements"] = {
-                "recent_improvements": [
-                    {"type": "System Enhancement", "title": "Metrics Dashboard", "impact": "Real-time monitoring", "status": "Active"},
-                    {"type": "Performance", "title": "Response Optimization", "impact": "15% faster responses", "status": "Active"}
-                ]
-            }
+            # Get real improvements from improvement_tasks table
+            try:
+                improvements_result = self.supabase_logger.client.table("improvement_tasks").select(
+                    "agent_type", "method_name", "status", "actual_benefit", "roi", "completed_at"
+                ).eq("status", "completed").order("completed_at", desc=True).limit(5).execute()
+                
+                if improvements_result.data:
+                    recent_improvements = []
+                    for imp in improvements_result.data[:3]:
+                        benefit = imp.get("actual_benefit", {})
+                        recent_improvements.append({
+                            "type": imp.get("agent_type", "System"),
+                            "title": imp.get("method_name", "Unknown"),
+                            "impact": f"ROI: {imp.get('roi', 0):.1f}x" if imp.get('roi') else "Improvement applied",
+                            "status": "Active" if imp.get("status") == "completed" else "In Progress"
+                        })
+                    
+                    metrics["improvements"] = {
+                        "recent_improvements": recent_improvements
+                    }
+                else:
+                    # Fallback if no improvements found
+                    metrics["improvements"] = {
+                        "recent_improvements": [
+                            {"type": "System", "title": "Workflow Tracking", "impact": "Pattern recognition enabled", "status": "Active"},
+                            {"type": "Cost", "title": "Real-time monitoring", "impact": "Cost tracking enabled", "status": "Active"}
+                        ]
+                    }
+            except Exception as e:
+                logger.warning(f"Error getting improvements: {str(e)}")
+                metrics["improvements"] = {"recent_improvements": []}
             
         except Exception as e:
             logger.error(f"Error retrieving system metrics: {str(e)}")

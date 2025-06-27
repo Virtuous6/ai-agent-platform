@@ -58,9 +58,8 @@ HEALTHCHECK --interval=30s --timeout=10s --start-period=60s --retries=3 \
 # Expose port
 EXPOSE $PORT
 
-# Optimized startup script
-COPY --chown=appuser:appuser deployment/start_services.sh ./
-RUN chmod +x start_services.sh
+# Make start script executable
+RUN chmod +x deployment/start_services.sh
 
-# Use web server as entrypoint for Cloud Run
-CMD ["python", "web_server.py"]
+# Use the start services script to run both health server and Slack bot
+CMD ["./deployment/start_services.sh"]

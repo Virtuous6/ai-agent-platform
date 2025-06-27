@@ -1,28 +1,25 @@
-images:
-- gcr.io/$PROJECT_ID/ai-agent-platform:$COMMIT_SHA
-- gcr.io/$PROJECT_ID/ai-agent-platform:latest
 steps:
   # Build with cache optimization
   - name: 'gcr.io/cloud-builders/docker'
     args:
       - 'build'
       - '--cache-from'
-      - 'gcr.io/$PROJECT_ID/ai-agent-platform:latest'
+      - 'gcr.io/${_PROJECT_ID}/ai-agent-platform:latest'
       - '-t'
-      - 'gcr.io/$PROJECT_ID/ai-agent-platform:$COMMIT_SHA'
+      - 'gcr.io/${_PROJECT_ID}/ai-agent-platform:${BUILD_ID}'
       - '-t' 
-      - 'gcr.io/$PROJECT_ID/ai-agent-platform:latest'
+      - 'gcr.io/${_PROJECT_ID}/ai-agent-platform:latest'
       - '.'
     env:
       - 'DOCKER_BUILDKIT=1'
 
-  # Push commit-specific image
+  # Push build-specific image
   - name: 'gcr.io/cloud-builders/docker'
-    args: ['push', 'gcr.io/$PROJECT_ID/ai-agent-platform:$COMMIT_SHA']
+    args: ['push', 'gcr.io/${_PROJECT_ID}/ai-agent-platform:${BUILD_ID}']
 
   # Push latest tag
   - name: 'gcr.io/cloud-builders/docker'
-    args: ['push', 'gcr.io/$PROJECT_ID/ai-agent-platform:latest']
+    args: ['push', 'gcr.io/${_PROJECT_ID}/ai-agent-platform:latest']
 
   # Deploy to Cloud Run with optimized settings
   - name: 'gcr.io/google.com/cloudsdktool/cloud-sdk'
@@ -32,7 +29,7 @@ steps:
       - 'deploy'
       - 'ai-agent-platform'
       - '--image'
-      - 'gcr.io/$PROJECT_ID/ai-agent-platform:$COMMIT_SHA'
+      - 'gcr.io/${_PROJECT_ID}/ai-agent-platform:${BUILD_ID}'
       - '--region'
       - 'us-central1'
       - '--platform'
@@ -54,6 +51,11 @@ steps:
       - '8080'
       - '--set-env-vars'
       - 'ENVIRONMENT=production,LOG_LEVEL=INFO,ENABLE_PERFORMANCE_TRACKING=true'
+
+# Optimized image tags
+images:
+  - 'gcr.io/${_PROJECT_ID}/ai-agent-platform:${BUILD_ID}'
+  - 'gcr.io/${_PROJECT_ID}/ai-agent-platform:latest'
 
 # Build options for faster builds
 options:

@@ -457,47 +457,33 @@ Provide specific, actionable optimization recommendations with:
             return {"status": "error", "error": str(e)}
     
     async def _gather_workflow_data(self, days_back: int) -> List[Dict[str, Any]]:
-        """Gather workflow data from the database for analysis."""
+        """Gather workflow execution data for analysis."""
         try:
             if not self.db_logger:
                 return []
             
-            # Get conversation data
+            # Query workflow runs from the new table
             from_date = (datetime.utcnow() - timedelta(days=days_back)).isoformat()
             
-            # Get conversations and their messages
-            conversations_query = f"""
-                SELECT c.*, 
-                       COUNT(m.id) as message_count,
-                       AVG(m.processing_time_ms) as avg_processing_time,
-                       SUM(m.total_tokens) as total_tokens,
-                       SUM(m.estimated_cost) as total_cost
-                FROM conversations c
-                LEFT JOIN messages m ON c.id = m.conversation_id
-                WHERE c.started_at >= '{from_date}'
-                GROUP BY c.id
-                ORDER BY c.started_at DESC
-            """
+            try:
+                # Try new workflow_runs table first
+                result = self.db_logger.client.table("workflow_runs").select("*").gte("created_at", from_date).execute()
+                if result.data:
+                    return result.data
+            except:
+                pass
             
-            # For now, use the available methods
-            conversations = await self.db_logger.get_conversation_analytics(days_back)
-            agent_performance = await self.db_logger.get_agent_performance(days=days_back)
+            # Fallback to messages table analysis
+            messages = await self.db_logger.client.table("messages").select(
+                "user_id", "agent_type", "message_type", "processing_time_ms",
+                "timestamp", "routing_confidence", "escalation_suggestion"
+            ).gte("timestamp", from_date).execute()
             
-            # Combine and structure the data
+            # Group by conversation patterns
             workflow_data = []
+            # ... process messages into workflow patterns ...
             
-            # Create synthetic workflow data from available analytics
-            if conversations:
-                for agent, count in conversations.get("agent_distribution", {}).items():
-                    workflow_data.append({
-                        "agent_type": agent,
-                        "request_count": count,
-                        "success_rate": 0.85,  # Default estimate
-                        "avg_processing_time": 2500,  # Default estimate in ms
-                        "total_cost": count * 0.15  # Estimate cost
-                    })
-            
-            return workflow_data
+            return workflow_data if workflow_data else messages.data
             
         except Exception as e:
             logger.error(f"Error gathering workflow data: {str(e)}")

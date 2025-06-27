@@ -165,6 +165,10 @@ class AgentOrchestrator:
         # Initialize Improvement Orchestrator
         self.improvement_orchestrator = None
         
+        # Initialize Workflow Tracker
+        from orchestrator.workflow_tracker import WorkflowTracker
+        self.workflow_tracker = WorkflowTracker(db_logger=db_logger)
+        
         # Initialize LLM for intelligent intent classification
         self.intent_llm = ChatOpenAI(
             model="gpt-3.5-turbo-0125",  # Fast and cost-effective for classification
@@ -301,6 +305,24 @@ Always be:
                     "specialty": specialty,
                     "parent_context": parent_context
                 })
+                
+                # Save to spawned_agents table
+                try:
+                    spawn_data = {
+                        "agent_id": agent_id,
+                        "specialty": specialty,
+                        "parent_context": parent_context or {},
+                        "system_prompt": system_prompt,
+                        "temperature": temperature,
+                        "model_name": "gpt-3.5-turbo-0125",
+                        "max_tokens": max_tokens,
+                        "spawned_by": parent_context.get("user_id", "system") if parent_context else "system",
+                        "spawned_at": datetime.utcnow().isoformat(),
+                        "status": "active"
+                    }
+                    self.db_logger.client.table("spawned_agents").insert(spawn_data).execute()
+                except Exception as e:
+                    logger.warning(f"Failed to save spawned agent to database: {e}")
             
             # Publish spawn event
             await self.event_bus.publish("agent_spawned", {
@@ -702,6 +724,16 @@ Respond with JSON only.
         Returns:
             Dictionary containing routing decision and agent response
         """
+        # Start workflow tracking
+        run_id = None
+        if self.workflow_tracker:
+            run_id = await self.workflow_tracker.start_workflow(
+                workflow_type="agent_routing",
+                user_id=context.get("user_id", "unknown"),
+                trigger_message=message,
+                conversation_id=context.get("conversation_id")
+            )
+        
         try:
             logger.info(f"Routing request: '{message[:50]}...'")
             
@@ -709,7 +741,23 @@ Respond with JSON only.
             explicit_agent = self._check_explicit_mentions(message)
             if explicit_agent:
                 logger.info(f"Explicit agent mention detected: {explicit_agent.value}")
-                return await self._route_to_agent(explicit_agent, message, context, confidence=1.0)
+                result = await self._route_to_agent(explicit_agent, message, context, confidence=1.0)
+                
+                # Complete workflow tracking
+                if run_id and self.workflow_tracker:
+                    await self.workflow_tracker.track_agent_used(run_id, explicit_agent.value)
+                    await self.workflow_tracker.complete_workflow(
+                        run_id=run_id,
+                        success=True,
+                        response=result.get("response", ""),
+                        tokens_used=result.get("tokens_used", 0),
+                        estimated_cost=result.get("processing_cost", 0.0),
+                        confidence_score=1.0,
+                        pattern_signature=f"explicit_{explicit_agent.value}",
+                        automation_potential=0.9
+                    )
+                
+                return result
             
             # Perform LLM-based intent classification
             classification = await self._classify_intent_with_llm(message, context)
@@ -720,10 +768,34 @@ Respond with JSON only.
             logger.info(f"Selected agent: {selected_agent.value} (confidence: {confidence:.2f})")
             
             # Route to the selected agent
-            return await self._route_to_agent(selected_agent, message, context, confidence)
+            result = await self._route_to_agent(selected_agent, message, context, confidence)
+            
+            # Complete workflow tracking
+            if run_id and self.workflow_tracker:
+                await self.workflow_tracker.track_agent_used(run_id, selected_agent.value)
+                await self.workflow_tracker.complete_workflow(
+                    run_id=run_id,
+                    success=True,
+                    response=result.get("response", ""),
+                    tokens_used=result.get("tokens_used", 0),
+                    estimated_cost=result.get("processing_cost", 0.0),
+                    confidence_score=confidence,
+                    pattern_signature=f"auto_{selected_agent.value}_{int(confidence*10)}",
+                    automation_potential=0.7 if confidence > 0.8 else 0.3
+                )
+            
+            return result
             
         except Exception as e:
             logger.error(f"Error in routing: {str(e)}")
+            
+            # Track failure
+            if run_id and self.workflow_tracker:
+                await self.workflow_tracker.fail_workflow(
+                    run_id=run_id,
+                    error_message=str(e)
+                )
+            
             # Fallback to general agent on error
             return await self._route_to_agent(AgentType.GENERAL, message, context, confidence=0.0, error=str(e))
     
