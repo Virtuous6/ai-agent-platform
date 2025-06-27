@@ -38,6 +38,13 @@ from database.supabase_logger import SupabaseLogger
 # Import feedback handler
 from agents.improvement.feedback_handler import FeedbackHandler
 
+# Import MCP commands
+from mcp.slack_interface.mcp_commands import MCPSlackCommands
+
+# Import tool collaboration interface
+from mcp.slack_interface.tool_collaboration import ToolCollaborationInterface
+from mcp.dynamic_tool_builder import DynamicToolBuilder
+
 # Configure logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -95,6 +102,52 @@ class AIAgentSlackBot:
             logger.warning(f"❌ Feedback handler initialization failed: {str(e)}")
             self.feedback_handler = None
         
+        # Initialize MCP commands
+        try:
+            if self.supabase_logger:
+                self.mcp_commands = MCPSlackCommands(db_logger=self.supabase_logger)
+                logger.info("✅ MCP commands initialized successfully")
+            else:
+                logger.warning("⚠️ MCP commands skipped - Supabase logger not available")
+                self.mcp_commands = None
+        except Exception as e:
+            logger.warning(f"❌ MCP commands initialization failed: {str(e)}")
+            self.mcp_commands = None
+        
+        # Initialize tool collaboration interface
+        try:
+            if self.supabase_logger:
+                # Create required dependencies for tool collaboration
+                from mcp.tool_registry import MCPToolRegistry
+                from mcp.security_sandbox import MCPSecuritySandbox
+                from events.event_bus import EventBus
+                
+                # Initialize event bus if not already available
+                event_bus = EventBus()
+                tool_registry = MCPToolRegistry()
+                security_sandbox = MCPSecuritySandbox()
+                
+                # Initialize dynamic tool builder
+                self.dynamic_tool_builder = DynamicToolBuilder(
+                    supabase_logger=self.supabase_logger,
+                    tool_registry=tool_registry,
+                    event_bus=event_bus,
+                    security_sandbox=security_sandbox
+                )
+                
+                # Initialize tool collaboration interface
+                self.tool_collaboration = ToolCollaborationInterface(
+                    slack_app=self.app,
+                    dynamic_tool_builder=self.dynamic_tool_builder
+                )
+                logger.info("✅ Tool collaboration interface initialized successfully")
+            else:
+                logger.warning("⚠️ Tool collaboration skipped - Supabase logger not available")
+                self.tool_collaboration = None
+        except Exception as e:
+            logger.warning(f"❌ Tool collaboration initialization failed: {str(e)}")
+            self.tool_collaboration = None
+        
         # Bot user ID for mention detection
         self.bot_user_id = None
         
@@ -151,6 +204,10 @@ class AIAgentSlackBot:
         async def handle_metrics_command(ack, say, command, client):
             await ack()
             await self._handle_metrics_command(command, say, client)
+        
+        # Register MCP command handlers
+        if self.mcp_commands:
+            self.mcp_commands.register_handlers(self.app)
     
     async def _handle_message(self, event: Dict[str, Any], say, client, is_mention: bool = False):
         """
@@ -658,6 +715,7 @@ class AIAgentSlackBot:
         if not self.supabase_logger:
             return {"error": "Database connection unavailable"}
         
+        from datetime import datetime, timedelta
         metrics = {}
         
         try:
@@ -666,9 +724,11 @@ class AIAgentSlackBot:
             
             # Get basic workflow metrics from messages table
             try:
+                seven_days_ago = (datetime.utcnow() - timedelta(days=7)).isoformat()
+                
                 result = self.supabase_logger.client.table("messages").select(
                     "message_type, processing_time_ms, timestamp, routing_confidence"
-                ).gte("timestamp", "now() - interval '7 days'").execute()
+                ).gte("timestamp", seven_days_ago).execute()
                 
                 if result.data:
                     total_messages = len(result.data)
@@ -689,7 +749,8 @@ class AIAgentSlackBot:
             
             # Get agent performance
             try:
-                result = self.supabase_logger.client.table("agent_metrics").select("*").gte("date", "now() - interval '30 days'").execute()
+                thirty_days_ago = (datetime.utcnow() - timedelta(days=30)).isoformat()
+                result = self.supabase_logger.client.table("agent_metrics").select("*").gte("created_at", thirty_days_ago).execute()
                 
                 if result.data:
                     agents_data = []
@@ -718,9 +779,10 @@ class AIAgentSlackBot:
             
             # Get cost metrics from token_usage table
             try:
+                thirty_days_ago = (datetime.utcnow() - timedelta(days=30)).isoformat()
                 result = self.supabase_logger.client.table("token_usage").select(
                     "estimated_cost, total_tokens, created_at"
-                ).gte("created_at", "now() - interval '30 days'").execute()
+                ).gte("created_at", thirty_days_ago).execute()
                 
                 if result.data:
                     today = str(datetime.now().date())
@@ -744,9 +806,10 @@ class AIAgentSlackBot:
             
             # Simple satisfaction metrics based on routing confidence
             try:
+                seven_days_ago = (datetime.utcnow() - timedelta(days=7)).isoformat()
                 result = self.supabase_logger.client.table("messages").select(
                     "routing_confidence, escalation_suggestion"
-                ).eq("message_type", "bot_response").gte("timestamp", "now() - interval '7 days'").execute()
+                ).eq("message_type", "bot_response").gte("timestamp", seven_days_ago).execute()
                 
                 if result.data:
                     confidences = [m.get("routing_confidence", 0.5) for m in result.data if m.get("routing_confidence")]
@@ -766,57 +829,71 @@ class AIAgentSlackBot:
                 logger.warning(f"Error getting satisfaction metrics: {str(e)}")
                 metrics["user_satisfaction"] = {"error": "Unable to retrieve satisfaction metrics"}
             
-            # Recent activity
+            # Recent activity with more live data
             try:
-                result = self.supabase_logger.client.table("conversations").select(
+                seven_days_ago = (datetime.utcnow() - timedelta(days=7)).isoformat()
+                conversations_result = self.supabase_logger.client.table("conversations").select(
                     "started_at, status"
-                ).gte("started_at", "now() - interval '7 days'").execute()
+                ).gte("started_at", seven_days_ago).execute()
                 
-                if result.data:
+                # Get live database stats
+                messages_count_result = self.supabase_logger.client.table("messages").select(
+                    "id", count="exact"
+                ).execute()
+                
+                if conversations_result.data:
                     today = str(datetime.now().date())
-                    conversations_today = len([c for c in result.data if c.get("started_at", "").startswith(today)])
-                    active_conversations = len([c for c in result.data if c.get("status") == "active"])
+                    conversations_today = len([c for c in conversations_result.data if c.get("started_at", "").startswith(today)])
+                    active_conversations = len([c for c in conversations_result.data if c.get("status") == "active"])
                     
                     metrics["recent_activity"] = {
                         "conversations_today": conversations_today,
                         "active_conversations": active_conversations,
-                        "system_active": True
+                        "total_messages_in_db": messages_count_result.count if messages_count_result.count else 0,
+                        "system_active": True,
+                        "data_source": "live_supabase_query"
+                    }
+                else:
+                    metrics["recent_activity"] = {
+                        "conversations_today": 0, 
+                        "active_conversations": 0,
+                        "total_messages_in_db": messages_count_result.count if messages_count_result.count else 0,
+                        "system_active": True,
+                        "data_source": "live_supabase_query"
                     }
             except Exception as e:
                 logger.warning(f"Error getting activity metrics: {str(e)}")
-                metrics["recent_activity"] = {"system_active": True, "conversations_today": 0}
+                metrics["recent_activity"] = {"system_active": True, "conversations_today": 0, "error": str(e)}
             
-            # Get real improvements from improvement_tasks table
+            # Get real improvements from improvement_tasks table - LIVE DATA ONLY
             try:
                 improvements_result = self.supabase_logger.client.table("improvement_tasks").select(
-                    "agent_type", "method_name", "status", "actual_benefit", "roi", "completed_at"
-                ).eq("status", "completed").order("completed_at", desc=True).limit(5).execute()
+                    "*"
+                ).order("created_at", desc=True).limit(10).execute()
                 
+                recent_improvements = []
                 if improvements_result.data:
-                    recent_improvements = []
-                    for imp in improvements_result.data[:3]:
-                        benefit = imp.get("actual_benefit", {})
+                    for imp in improvements_result.data[:5]:
                         recent_improvements.append({
                             "type": imp.get("agent_type", "System"),
                             "title": imp.get("method_name", "Unknown"),
-                            "impact": f"ROI: {imp.get('roi', 0):.1f}x" if imp.get('roi') else "Improvement applied",
-                            "status": "Active" if imp.get("status") == "completed" else "In Progress"
+                            "impact": f"ROI: {imp.get('roi', 0):.1f}x" if imp.get('roi') else "Live improvement tracked",
+                            "status": imp.get("status", "unknown").title(),
+                            "completed": imp.get("completed_at", imp.get("created_at", ""))[:10] if imp.get("completed_at") or imp.get("created_at") else "Recent"
                         })
-                    
-                    metrics["improvements"] = {
-                        "recent_improvements": recent_improvements
-                    }
-                else:
-                    # Fallback if no improvements found
-                    metrics["improvements"] = {
-                        "recent_improvements": [
-                            {"type": "System", "title": "Workflow Tracking", "impact": "Pattern recognition enabled", "status": "Active"},
-                            {"type": "Cost", "title": "Real-time monitoring", "impact": "Cost tracking enabled", "status": "Active"}
-                        ]
-                    }
+                
+                metrics["improvements"] = {
+                    "recent_improvements": recent_improvements,
+                    "total_tracked": len(improvements_result.data) if improvements_result.data else 0
+                }
+                
             except Exception as e:
                 logger.warning(f"Error getting improvements: {str(e)}")
-                metrics["improvements"] = {"recent_improvements": []}
+                metrics["improvements"] = {
+                    "recent_improvements": [],
+                    "total_tracked": 0,
+                    "error": "Unable to retrieve live improvement data"
+                }
             
         except Exception as e:
             logger.error(f"Error retrieving system metrics: {str(e)}")
@@ -825,14 +902,17 @@ class AIAgentSlackBot:
         return metrics
     
     async def _format_metrics_for_slack(self, metrics_data: Dict[str, Any]) -> str:
-        """Format the metrics data for beautiful Slack display."""
+        """Format the metrics data for beautiful Slack display - LIVE DATA ONLY."""
         if "error" in metrics_data:
-            return f"❌ *System Metrics Dashboard*\n\nError retrieving metrics: {metrics_data['error']}"
+            return f"❌ *Live System Metrics Dashboard*\n\nError retrieving metrics: {metrics_data['error']}"
         
         message_parts = []
         
-        # Header
-        message_parts.append("📊 *AI Agent Platform - System Metrics Dashboard*")
+        # Header with timestamp
+        from datetime import datetime
+        timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S UTC")
+        message_parts.append("📊 *AI Agent Platform - Live Metrics Dashboard*")
+        message_parts.append(f"🕐 *Generated:* {timestamp}")
         message_parts.append("=" * 50)
         
         # System Health
@@ -888,27 +968,77 @@ class AIAgentSlackBot:
             message_parts.append(f"   🎯 Confidence: {satisfaction.get('avg_confidence', 0):.1f}%")
             message_parts.append(f"   📈 Escalation Rate: {satisfaction.get('escalation_rate', 0):.1f}%")
         
-        # Recent Activity
+        # Recent Activity - LIVE DATA
         activity = metrics_data.get("recent_activity", {})
         if activity.get("system_active"):
-            message_parts.append(f"\n⚡ *Recent Activity:*")
-            message_parts.append(f"   📊 Conversations Today: {activity.get('conversations_today', 0)}")
-            message_parts.append(f"   🔄 Active Conversations: {activity.get('active_conversations', 0)}")
+            message_parts.append(f"\n⚡ *Real-time Activity:*")
+            if "error" in activity:
+                message_parts.append(f"   ❌ Error: {activity['error']}")
+            else:
+                message_parts.append(f"   📊 Conversations Today: {activity.get('conversations_today', 0)}")
+                message_parts.append(f"   🔄 Active Conversations: {activity.get('active_conversations', 0)}")
+                message_parts.append(f"   💾 Total Messages in DB: {activity.get('total_messages_in_db', 0):,}")
+                message_parts.append(f"   🔍 Data Source: {activity.get('data_source', 'unknown')}")
         
-        # Recent Improvements
+        # Recent Improvements - LIVE DATA ONLY
         improvements = metrics_data.get("improvements", {})
         recent = improvements.get("recent_improvements", [])
-        if recent:
-            message_parts.append(f"\n🚀 *Recent Improvements:*")
-            for imp in recent[:2]:
-                status_emoji = "✅" if imp.get("status") == "Active" else "🔄"
+        total_tracked = improvements.get("total_tracked", 0)
+        
+        message_parts.append(f"\n🚀 *System Improvements (Live):*")
+        if "error" in improvements:
+            message_parts.append(f"   ❌ {improvements['error']}")
+        elif recent:
+            message_parts.append(f"   📈 Total Tracked: {total_tracked}")
+            for imp in recent[:3]:
+                status_emoji = "✅" if imp.get("status") == "Completed" else "🔄" if imp.get("status") == "In Progress" else "📋"
                 message_parts.append(f"   {status_emoji} {imp.get('type')}: {imp.get('title')}")
-                message_parts.append(f"      Impact: {imp.get('impact')}")
+                message_parts.append(f"      Impact: {imp.get('impact')} | Date: {imp.get('completed', 'Ongoing')}")
+        else:
+            message_parts.append("   📭 No improvements tracked yet in database")
+            message_parts.append("   💡 Use `/improve` to start tracking improvements")
+        
+        # MCP Connections Status (if available) - LIVE DATA
+        if hasattr(self, 'mcp_commands') and self.mcp_commands:
+            try:
+                # Check if mcp_connections table exists and get data
+                mcp_result = self.supabase_logger.client.table("mcp_connections").select(
+                    "*", count="exact"
+                ).execute()
+                
+                message_parts.append(f"\n🔌 *MCP Connections (Live):*")
+                if mcp_result.count and mcp_result.count > 0:
+                    # Try to find status-like fields (could be 'status', 'active', etc.)
+                    active_connections = 0
+                    for conn in mcp_result.data:
+                        if (conn.get("status") == "active" or 
+                            conn.get("active") == True or 
+                            conn.get("enabled") == True):
+                            active_connections += 1
+                    
+                    message_parts.append(f"   📊 Total Connections: {mcp_result.count}")
+                    message_parts.append(f"   🟢 Active: {active_connections}")
+                    message_parts.append(f"   🔴 Inactive: {mcp_result.count - active_connections}")
+                    
+                    # Show types if available
+                    types = list(set([c.get("mcp_type", c.get("type", "unknown")) for c in mcp_result.data]))
+                    message_parts.append(f"   🏷️ Types: {', '.join(types[:3])}")
+                else:
+                    message_parts.append("   📭 No MCP connections in database yet")
+                
+                message_parts.append("   💡 Use `/mcp connect` to add connections")
+                
+            except Exception as e:
+                message_parts.append(f"\n🔌 *MCP Connections:*")
+                message_parts.append("   🟢 MCP system available")
+                message_parts.append("   📭 No connections table found yet")
+                message_parts.append("   💡 Use `/mcp connect` to create your first connection")
         
         # Footer
         message_parts.append(f"\n{'=' * 50}")
-        message_parts.append("💡 *Commands:* `/improve` `/save-workflow` `/suggest`")
-        message_parts.append("🔄 Metrics refresh automatically")
+        message_parts.append("🔴 *LIVE DATA SOURCE:* Supabase Database")
+        message_parts.append("💡 *Commands:* `/improve` `/save-workflow` `/suggest` `/mcp`")
+        message_parts.append("🔄 All metrics pulled from live database on each request")
         
         return "\n".join(message_parts)
 
