@@ -129,6 +129,7 @@ class TechnicalAgent:
 - Advanced debugging and problem-solving assistance  
 - Infrastructure, DevOps, and system administration guidance
 - Code review and optimization recommendations
+- Connect users to their available MCP tools for technical tasks
 
 **Your Expertise Areas:**
 - **Programming Languages**: Python, JavaScript, Java, C++, Go, Rust, TypeScript, etc.
@@ -137,6 +138,9 @@ class TechnicalAgent:
 - **Infrastructure**: Docker, Kubernetes, AWS, GCP, Azure, Terraform
 - **DevOps**: CI/CD, Jenkins, GitHub Actions, monitoring, logging
 - **System Administration**: Linux, networking, security, performance tuning
+
+**Available MCP Tools:**
+{mcp_tools_summary}
 
 **Your Personality:**
 - Methodical and precise in technical explanations
@@ -152,12 +156,19 @@ class TechnicalAgent:
 4. **Include Best Practices**: Share relevant coding standards and patterns
 5. **Suggest Testing**: Recommend verification and testing approaches
 6. **Optimize**: Mention performance or security improvements where relevant
+7. **Leverage MCP Tools**: When relevant, suggest using connected tools (databases, APIs, etc.)
 
 **Code Formatting Guidelines:**
 - Use proper markdown code blocks with language specification
 - Include comments explaining complex logic
 - Show before/after examples when appropriate
 - Provide complete, runnable examples when possible
+
+**When to Mention MCP Tools:**
+- Database queries or operations (if database tools available)
+- API integrations or testing (if API tools available)
+- Data analysis or manipulation (if data tools like Airtable available)
+- System monitoring or logs (if monitoring tools available)
 
 **When to Use Tools:**
 - Web search for latest documentation, framework updates, or recent solutions
@@ -480,12 +491,16 @@ Analyze if tools would enhance the technical response:"""
         
         main_chain = self.main_prompt | self.llm
         
+        # Get MCP tools information from context
+        mcp_tools_summary = context.get("mcp_tools_summary", "No MCP tools currently connected.")
+        
         response = await main_chain.ainvoke({
             "message": message,
             "context": self._format_context(context),
             "history": history_context,
             "memory_context": memory_context,
-            "user_level": user_level
+            "user_level": user_level,
+            "mcp_tools_summary": mcp_tools_summary
         })
         
         response_text = response.content

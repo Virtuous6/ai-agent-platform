@@ -129,12 +129,14 @@ class GeneralAgent:
 - Maintain warm, professional tone while being genuinely helpful
 - Learn from every interaction to continuously improve
 - Contribute to the platform's knowledge and capabilities
+- Connect users to their available MCP tools when relevant
 
 **Platform Integration:**
 - All interactions are logged for learning and improvement
 - Your responses contribute to platform knowledge
 - You can access relevant context from previous conversations
 - Your insights help train other agents and improve workflows
+- **IMPORTANT**: You have access to user's connected MCP tools and should mention them when relevant
 
 **Your Personality:**
 - Warm, friendly, and approachable 😊
@@ -151,6 +153,10 @@ class GeneralAgent:
 - Engage in natural conversation
 - Recognize when specialized help is needed
 - Access relevant context from previous conversations
+- **NEW**: Identify when user's connected MCP tools can help with their request
+
+**Available MCP Tools:**
+{mcp_tools_summary}
 
 **Important Guidelines:**
 1. Be conversational and natural while leveraging platform capabilities
@@ -160,11 +166,18 @@ class GeneralAgent:
 5. Keep responses concise but complete and contextually aware
 6. Reference previous conversation context when relevant
 7. Learn from each interaction to improve future responses
+8. **When relevant, mention user's connected MCP tools** (e.g., "I see you have Airtable connected - I can help you query your data!")
 
 **When to Suggest Escalation:**
 - Technical/programming questions → Technical Agent
 - Research, analysis, or data gathering → Research Agent
 - Complex specialized topics outside general knowledge
+
+**When to Mention MCP Tools:**
+- User asks about data from connected services (Airtable, databases, etc.)
+- User wants to perform actions on connected platforms
+- User needs information that could come from their connected tools
+- User seems unaware of their available integrations
 
 Current conversation context: {context}
 Recent conversation history: {history}
@@ -172,7 +185,7 @@ Relevant context from memory: {memory_context}"""
 
         human_template = """User message: {message}
 
-Please respond as the General Agent, being helpful, warm, and professional. If this requires specialized assistance, you can mention it, but still provide what help you can."""
+Please respond as the General Agent, being helpful, warm, and professional. If the user's request could benefit from their connected MCP tools, mention them! If this requires specialized assistance, you can mention it, but still provide what help you can."""
 
         return ChatPromptTemplate.from_messages([
             SystemMessagePromptTemplate.from_template(system_template),
@@ -439,13 +452,25 @@ Analyze this message for escalation needs:"""
                                history_context: str, memory_context: str, escalation_suggestion: Optional[EscalationSuggestion]) -> str:
         """Generate the main response using the LLM with memory context."""
         
+        # Check if this request would benefit from MCP tool execution
+        if context.get("can_execute_mcp_tools") and self._should_execute_mcp_tools(message, context):
+            tool_result = await self._execute_relevant_mcp_tools(message, context)
+            if tool_result:
+                # Include tool results in the response
+                return await self._generate_response_with_tool_data(message, context, history_context, memory_context, tool_result, escalation_suggestion)
+        
+        # Standard response generation
         main_chain = self.main_prompt | self.llm
+        
+        # Get MCP tools information from context
+        mcp_tools_summary = context.get("mcp_tools_summary", "No MCP tools currently connected.")
         
         response = await main_chain.ainvoke({
             "message": message,
             "context": self._format_context(context),
             "history": history_context,
-            "memory_context": memory_context
+            "memory_context": memory_context,
+            "mcp_tools_summary": mcp_tools_summary
         })
         
         response_text = response.content
@@ -456,6 +481,140 @@ Analyze this message for escalation needs:"""
             response_text += f"\n\n💡 *For more specialized help with this, you might want to mention the {agent_name} specifically.*"
         
         return response_text
+    
+    def _should_execute_mcp_tools(self, message: str, context: Dict[str, Any]) -> bool:
+        """Determine if the message would benefit from MCP tool execution."""
+        message_lower = message.lower()
+        
+        # Keywords that suggest data retrieval needs
+        data_keywords = [
+            "show", "get", "retrieve", "list", "display", "data", "records", 
+            "campaigns", "bases", "tables", "airtable", "google ads", 
+            "performance", "from my", "my data"
+        ]
+        
+        # Check if message contains data-related keywords
+        keyword_matches = sum(1 for keyword in data_keywords if keyword in message_lower)
+        
+        # Check if user has available tools
+        available_tools = context.get("mcp_tools_available", [])
+        
+        return keyword_matches >= 2 and len(available_tools) > 0
+    
+    async def _execute_relevant_mcp_tools(self, message: str, context: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+        """Execute relevant MCP tools based on the user's message."""
+        try:
+            message_lower = message.lower()
+            available_tools = context.get("mcp_tools_available", [])
+            mcp_executor = context.get("mcp_executor")
+            user_id = context.get("user_id")
+            
+            if not available_tools or not mcp_executor:
+                return None
+            
+            # Determine which tool to execute based on message content
+            tool_to_execute = None
+            parameters = {}
+            
+            # Airtable-related requests
+            if any(word in message_lower for word in ["airtable", "bases", "tables"]):
+                if any(tool["name"] == "list_bases" for tool in available_tools):
+                    tool_to_execute = "list_bases"
+                elif any(tool["name"] == "get_records" for tool in available_tools):
+                    tool_to_execute = "get_records"
+                    # Check if user wants limited records
+                    if "three" in message_lower or "3" in message_lower:
+                        parameters["maxRecords"] = 3
+            
+            # Google Ads related requests
+            elif any(word in message_lower for word in ["google ads", "campaigns", "ads", "performance"]):
+                if "campaign" in message_lower and any(tool["name"] == "get_campaigns" for tool in available_tools):
+                    tool_to_execute = "get_campaigns"
+                elif "performance" in message_lower and any(tool["name"] == "get_performance_data" for tool in available_tools):
+                    tool_to_execute = "get_performance_data"
+            
+            # General data requests
+            elif any(word in message_lower for word in ["show", "get", "retrieve", "list"]) and "data" in message_lower:
+                # Try to find the most appropriate tool
+                for tool in available_tools:
+                    if tool["name"] in ["get_records", "list_bases", "get_campaigns"]:
+                        tool_to_execute = tool["name"]
+                        break
+            
+            if tool_to_execute:
+                logger.info(f"🔧 General Agent executing MCP tool: {tool_to_execute}")
+                result = await mcp_executor["execute_tool"](tool_to_execute, parameters, user_id)
+                return {
+                    "tool_name": tool_to_execute,
+                    "result": result,
+                    "parameters": parameters
+                }
+        
+        except Exception as e:
+            logger.error(f"Error executing MCP tools: {e}")
+        
+        return None
+    
+    async def _generate_response_with_tool_data(self, message: str, context: Dict[str, Any], 
+                                              history_context: str, memory_context: str, 
+                                              tool_result: Dict[str, Any], escalation_suggestion: Optional[EscalationSuggestion]) -> str:
+        """Generate response incorporating MCP tool execution results."""
+        
+        tool_name = tool_result["tool_name"]
+        result = tool_result["result"]
+        
+        if result.get("success"):
+            # Format the tool data for display
+            data = result.get("data", {})
+            message_text = result.get("message", "")
+            
+            response_parts = [
+                f"✅ I executed **{tool_name}** from your connected MCP tools!",
+                f"\n📊 **Result:** {message_text}",
+                "\n**Data:**"
+            ]
+            
+            # Format data based on type
+            if isinstance(data, list):
+                response_parts.append("\n```")
+                for i, item in enumerate(data[:5], 1):  # Limit to 5 items
+                    if isinstance(item, dict):
+                        if "fields" in item:  # Airtable record format
+                            fields = item["fields"]
+                            response_parts.append(f"{i}. {fields}")
+                        else:
+                            response_parts.append(f"{i}. {item}")
+                    else:
+                        response_parts.append(f"{i}. {item}")
+                response_parts.append("```")
+            elif isinstance(data, dict):
+                response_parts.append("\n```json")
+                import json
+                response_parts.append(json.dumps(data, indent=2))
+                response_parts.append("```")
+            else:
+                response_parts.append(f"\n`{data}`")
+            
+            # Add note about simulation if present
+            if result.get("note"):
+                response_parts.append(f"\n💡 *Note: {result['note']}*")
+            
+            # Add connection info
+            available_tools = context.get("mcp_tools_available", [])
+            connection_names = list(set([tool["connection_name"] for tool in available_tools]))
+            if connection_names:
+                response_parts.append(f"\n🔗 *Connected via: {', '.join(connection_names)}*")
+        
+        else:
+            # Tool execution failed
+            error = result.get("error", "Unknown error")
+            response_parts = [
+                f"❌ I tried to execute **{tool_name}** but encountered an issue:",
+                f"\n**Error:** {error}",
+                "\n💡 Your MCP connections are active but the tool execution needs refinement."
+            ]
+        
+        return "".join(response_parts)
     
     def _format_conversation_history(self, history: List[Dict[str, Any]]) -> str:
         """Format conversation history for context."""

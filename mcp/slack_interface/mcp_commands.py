@@ -86,8 +86,14 @@ class MCPSlackCommands:
             subcommand = parts[0] if parts else "help"
             
             if subcommand == "connect":
-                service = parts[1] if len(parts) > 1 else None
-                await self._handle_connect_command(user_id, service, client, say)
+                if len(parts) >= 3 and parts[1] == "custom":
+                    # /mcp connect custom [name] [url]
+                    connection_name = parts[2] if len(parts) > 2 else None
+                    server_url = parts[3] if len(parts) > 3 else None
+                    await self._handle_custom_connect_command(user_id, connection_name, server_url, client, say)
+                else:
+                    service = parts[1] if len(parts) > 1 else None
+                    await self._handle_connect_command(user_id, service, client, say)
                 
             elif subcommand == "list":
                 await self._handle_list_command(user_id, say)
@@ -128,25 +134,103 @@ class MCPSlackCommands:
                 })
             else:
                 await say({
-                    "text": f"❌ Unknown service: {service}. Available services: {', '.join(self.run_cards.keys())}",
+                    "text": f"❌ Unknown service: {service}. Available services: {', '.join(self.run_cards.keys())}\n\n💡 **Want to connect a custom MCP server?**\nUse: `/mcp connect custom [name] [server_url]`\n\nExample: `/mcp connect custom google-ads https://your-server.com/mcp`",
                     "response_type": "ephemeral"
                 })
         else:
             # Show service selection via text instead of modal for compatibility
             available_services = ', '.join(self.run_cards.keys())
             await say({
-                "text": f"🔌 **MCP Service Connection**\n\nAvailable services: {available_services}\n\nUse `/mcp connect [service]` to connect to a specific service.\n\nExample: `/mcp connect supabase`",
+                "text": f"🔌 **MCP Service Connection**\n\n**Built-in Services:** {available_services}\n\nUse `/mcp connect [service]` to connect to a specific service.\n\n**Custom MCP Server:**\nUse `/mcp connect custom [name] [server_url]` for your own MCP servers.\n\n**Examples:**\n• `/mcp connect supabase` - Built-in service\n• `/mcp connect custom google-ads https://your-server.com/mcp` - Custom server",
                 "response_type": "ephemeral"
             })
+    
+    async def _handle_custom_connect_command(self, user_id: str, connection_name: Optional[str], server_url: Optional[str], client, say):
+        """Handle /mcp connect custom [name] [url] command."""
+        if not connection_name or not server_url:
+            await say({
+                "text": "❌ **Missing parameters for custom MCP connection**\n\nUsage: `/mcp connect custom [name] [server_url]`\n\nExample: `/mcp connect custom google-ads https://n8n.soulnav.co/mcp/b3c575cf-5b9b-49d7-81c3-ab4de7dca451/sse`",
+                "response_type": "ephemeral"
+            })
+            return
+        
+        try:
+            # Validate URL format
+            if not (server_url.startswith('http://') or server_url.startswith('https://')):
+                await say({
+                    "text": f"❌ **Invalid URL format**\n\nURL must start with http:// or https://\n\nProvided: `{server_url}`",
+                    "response_type": "ephemeral"
+                })
+                return
+            
+            # Create custom MCP connection
+            success = await self._create_custom_mcp_connection(
+                user_id=user_id,
+                connection_name=connection_name,
+                server_url=server_url
+            )
+            
+            if success:
+                await say({
+                    "text": f"✅ **Custom MCP connection created successfully!**\n\n🔗 **Name:** {connection_name}\n🌐 **URL:** {server_url}\n📊 **Status:** Active\n\n💡 Use `/mcp test {connection_name}` to verify the connection\n💡 Use `/mcp tools {connection_name}` to see available tools",
+                    "response_type": "ephemeral"
+                })
+            else:
+                await say({
+                    "text": f"❌ **Failed to create MCP connection**\n\nThere was an error storing the connection. Please try again or check if a connection with name '{connection_name}' already exists.",
+                    "response_type": "ephemeral"
+                })
+                
+        except Exception as e:
+            logger.error(f"❌ Error creating custom MCP connection: {str(e)}")
+            await say({
+                "text": f"❌ **Error creating custom MCP connection**\n\nError: {str(e)}\n\nPlease try again or contact support.",
+                "response_type": "ephemeral"
+            })
+    
+    async def _create_custom_mcp_connection(self, user_id: str, connection_name: str, server_url: str) -> bool:
+        """Create a custom MCP connection in the database."""
+        try:
+            # Store in Supabase mcp_connections table using the actual schema
+            connection_data = {
+                "user_id": user_id,
+                "service_name": "custom",  # Use service_name field that exists
+                "connection_name": connection_name,
+                "mcp_server_url": server_url,  # Use mcp_server_url field that exists
+                "credentials_encrypted": {},  # Empty for now, can be enhanced later
+                "credential_storage_type": "local_env",  # Use allowed value from constraint
+                "status": "active",
+                "health_status": "unknown",  # Initial health status
+                "total_tool_calls": 0,
+                "last_used": None
+            }
+            
+            result = self.db_logger.client.table("mcp_connections").insert(connection_data).execute()
+            
+            if result.data:
+                logger.info(f"✅ Created custom MCP connection: {connection_name} for user {user_id}")
+                return True
+            else:
+                logger.error(f"❌ No data returned when creating MCP connection")
+                return False
+                
+        except Exception as e:
+            logger.error(f"❌ Database error creating MCP connection: {str(e)}")
+            return False
     
     async def _handle_list_command(self, user_id: str, say):
         """Handle /mcp list command."""
         try:
-            connections = await self.connection_manager.get_user_connections(user_id)
+            # Query the database directly for user connections using actual schema
+            result = self.db_logger.client.table("mcp_connections").select(
+                "id, connection_name, service_name, mcp_server_url, status, health_status, total_tool_calls, last_used, created_at"
+            ).eq("user_id", user_id).execute()
+            
+            connections = result.data if result.data else []
             
             if not connections:
                 await say({
-                    "text": "📭 You don't have any MCP connections yet. Use `/mcp connect` to get started!",
+                    "text": "📭 You don't have any MCP connections yet. Use `/mcp connect custom [name] [url]` to get started!",
                     "response_type": "ephemeral"
                 })
                 return
@@ -164,17 +248,25 @@ class MCPSlackCommands:
             ]
             
             for conn in connections:
-                status_emoji = "✅" if conn.status == "active" else "⚠️"
-                tools_count = len(conn.tools_available)
+                status_emoji = "✅" if conn.get("status") == "active" else "⚠️"
+                health_status = conn.get("health_status", "unknown")
+                if health_status == "healthy":
+                    health_emoji = "🟢"
+                elif health_status == "unhealthy":
+                    health_emoji = "🔴"
+                elif health_status == "timeout":
+                    health_emoji = "⏰"
+                else:  # unknown
+                    health_emoji = "🟡"
                 
                 connection_text = (
-                    f"{status_emoji} *{conn.display_name or conn.connection_name}*\n"
-                    f"Type: {conn.mcp_type} | Tools: {tools_count} | "
-                    f"Last used: {conn.last_used.strftime('%Y-%m-%d') if conn.last_used else 'Never'}"
+                    f"{status_emoji} *{conn.get('connection_name', 'Unknown')}*\n"
+                    f"Service: {conn.get('service_name', 'custom')} | "
+                    f"Health: {health_emoji} {conn.get('health_status', 'unknown')} | "
+                    f"Tool calls: {conn.get('total_tool_calls', 0)}\n"
+                    f"URL: `{conn.get('mcp_server_url', 'Not set')}`\n"
+                    f"Last used: {conn.get('last_used', 'Never')[:10] if conn.get('last_used') else 'Never'}"
                 )
-                
-                if conn.description:
-                    connection_text += f"\n_{conn.description}_"
                 
                 blocks.append({
                     "type": "section",
@@ -184,8 +276,8 @@ class MCPSlackCommands:
                     },
                     "accessory": {
                         "type": "button",
-                        "text": {"type": "plain_text", "text": "🔧 Tools"},
-                        "action_id": f"show_tools_{conn.id}"
+                        "text": {"type": "plain_text", "text": "🔧 Test"},
+                        "action_id": f"test_connection_{conn.get('id')}"
                     }
                 })
             
@@ -238,22 +330,28 @@ class MCPSlackCommands:
             return
         
         try:
-            connections = await self.connection_manager.get_user_connections(user_id)
-            connection = next((c for c in connections if c.connection_name == connection_name), None)
+            # Find the connection in the database
+            result = self.db_logger.client.table("mcp_connections").select(
+                "id, connection_name, service_name, mcp_server_url"
+            ).eq("user_id", user_id).eq("connection_name", connection_name).execute()
             
-            if not connection:
+            if not result.data:
                 await say({
                     "text": f"❌ Connection '{connection_name}' not found.",
                     "response_type": "ephemeral"
                 })
                 return
             
-            # Delete the connection
-            success = await self.connection_manager.delete_connection(connection.id, user_id)
+            connection = result.data[0]
             
-            if success:
+            # Delete the connection
+            delete_result = self.db_logger.client.table("mcp_connections").delete().eq(
+                "id", connection["id"]
+            ).eq("user_id", user_id).execute()
+            
+            if delete_result.data:
                 await say({
-                    "text": f"✅ Successfully disconnected '{connection_name}' ({connection.mcp_type})",
+                    "text": f"✅ Successfully disconnected '{connection_name}' ({connection.get('service_name', 'custom')})\n🗑️ Server URL: `{connection.get('mcp_server_url', 'Unknown')}`",
                     "response_type": "ephemeral"
                 })
             else:
@@ -279,25 +377,53 @@ class MCPSlackCommands:
             return
         
         try:
-            connections = await self.connection_manager.get_user_connections(user_id)
-            connection = next((c for c in connections if c.connection_name == connection_name), None)
+            # Find the connection in the database
+            result = self.db_logger.client.table("mcp_connections").select(
+                "id, connection_name, service_name, mcp_server_url, status, health_status"
+            ).eq("user_id", user_id).eq("connection_name", connection_name).execute()
             
-            if not connection:
+            if not result.data:
                 await say({
                     "text": f"❌ Connection '{connection_name}' not found.",
                     "response_type": "ephemeral"
                 })
                 return
             
-            # Test the connection health
-            health_result = await self.connection_manager.test_connection_health(connection.id, user_id)
+            connection = result.data[0]
+            server_url = connection.get("mcp_server_url")
             
-            status_emoji = "✅" if health_result.get("status") == "healthy" else "❌"
-            
-            await say({
-                "text": f"{status_emoji} Connection test for '{connection_name}': {health_result.get('status', 'unknown')}",
-                "response_type": "ephemeral"
-            })
+            # Simple connection test - try to reach the URL
+            try:
+                import httpx
+                async with httpx.AsyncClient(timeout=10.0) as client:
+                    response = await client.get(server_url)
+                    is_reachable = response.status_code < 500
+                    test_status = "healthy" if is_reachable else "unhealthy"
+                    
+                # Update health status in database
+                self.db_logger.client.table("mcp_connections").update({
+                    "health_status": test_status,
+                    "last_health_check": "now()"
+                }).eq("id", connection["id"]).execute()
+                
+                status_emoji = "✅" if test_status == "healthy" else "❌"
+                
+                await say({
+                    "text": f"{status_emoji} **Connection test for '{connection_name}'**\n\n🌐 **URL:** `{server_url}`\n📊 **Status:** {test_status}\n🔍 **Response:** {response.status_code if 'response' in locals() else 'No response'}\n\n💡 Connection {'is working!' if test_status == 'healthy' else 'has issues - check the server URL'}",
+                    "response_type": "ephemeral"
+                })
+                
+            except Exception as test_error:
+                # Update health status to unhealthy
+                self.db_logger.client.table("mcp_connections").update({
+                    "health_status": "unhealthy",
+                    "last_health_check": "now()"
+                }).eq("id", connection["id"]).execute()
+                
+                await say({
+                    "text": f"❌ **Connection test failed for '{connection_name}'**\n\n🌐 **URL:** `{server_url}`\n📊 **Status:** unhealthy\n🔍 **Error:** {str(test_error)[:200]}...\n\n💡 Check if the server is running and accessible",
+                    "response_type": "ephemeral"
+                })
             
         except Exception as e:
             logger.error(f"❌ Error testing connection: {str(e)}")
@@ -309,22 +435,59 @@ class MCPSlackCommands:
     async def _handle_analytics_command(self, user_id: str, say):
         """Handle /mcp analytics command."""
         try:
-            analytics = await self.connection_manager.get_connection_analytics(user_id)
+            # Get analytics directly from the database using actual schema
+            result = self.db_logger.client.table("mcp_connections").select(
+                "id, connection_name, service_name, total_tool_calls, status, health_status, created_at, last_used"
+            ).eq("user_id", user_id).execute()
             
-            summary = analytics.get("summary", {})
+            connections = result.data if result.data else []
+            
+            if not connections:
+                await say({
+                    "text": "📊 **MCP Analytics**\n\n📭 No connections found. Use `/mcp connect custom [name] [url]` to create your first connection!",
+                    "response_type": "ephemeral"
+                })
+                return
+            
+            # Calculate analytics
+            total_connections = len(connections)
+            total_tool_calls = sum(conn.get('total_tool_calls', 0) for conn in connections)
+            active_connections = len([c for c in connections if c.get('status') == 'active'])
+            healthy_connections = len([c for c in connections if c.get('health_status') == 'healthy'])
+            unhealthy_connections = len([c for c in connections if c.get('health_status') == 'unhealthy'])
+            unknown_connections = len([c for c in connections if c.get('health_status') == 'unknown'])
+            
+            # Group by service type
+            by_service = {}
+            for conn in connections:
+                service = conn.get('service_name', 'unknown')
+                if service not in by_service:
+                    by_service[service] = {'count': 0, 'tool_calls': 0}
+                by_service[service]['count'] += 1
+                by_service[service]['tool_calls'] += conn.get('total_tool_calls', 0)
             
             text = (
                 f"*📊 Your MCP Analytics*\n\n"
-                f"• **Total Connections**: {summary.get('total_connections', 0)}\n"
-                f"• **Total Tool Executions**: {summary.get('total_executions', 0)}\n"
-                f"• **Average Success Rate**: {summary.get('avg_success_rate', 0):.1f}%\n"
-                f"• **Total Tokens Saved**: {summary.get('total_tokens_saved', 0)}\n"
+                f"• **Total Connections**: {total_connections}\n"
+                f"• **Active Connections**: {active_connections}\n"
+                f"• **Health Status**: 🟢 {healthy_connections} healthy, 🔴 {unhealthy_connections} unhealthy, 🟡 {unknown_connections} unknown\n"
+                f"• **Total Tool Calls**: {total_tool_calls:,}\n"
+                f"• **Success Rate**: {(healthy_connections/max(total_connections,1)*100):.1f}%\n"
             )
             
-            if analytics.get("by_type"):
-                text += "\n*By Connection Type:*\n"
-                for type_data in analytics["by_type"]:
-                    text += f"• {type_data['mcp_type']}: {type_data['total_executions']} executions\n"
+            if by_service:
+                text += "\n*📈 By Service Type:*\n"
+                for service, data in by_service.items():
+                    text += f"• **{service}**: {data['count']} connections, {data['tool_calls']} calls\n"
+            
+            # Recent activity
+            recent_connections = [c for c in connections if c.get('last_used')]
+            if recent_connections:
+                recent_connections.sort(key=lambda x: x.get('last_used', ''), reverse=True)
+                text += f"\n*🕐 Most Recent Activity:*\n"
+                for conn in recent_connections[:3]:
+                    last_used = conn.get('last_used', '')[:10] if conn.get('last_used') else 'Never'
+                    text += f"• **{conn.get('connection_name')}**: {last_used}\n"
             
             await say({
                 "text": text,
@@ -343,22 +506,28 @@ class MCPSlackCommands:
         help_text = """
 *🔌 MCP (Model Context Protocol) Commands*
 
-• `/mcp connect [service]` - Connect to external services
+**Built-in Services:**
+• `/mcp connect [service]` - Connect to built-in services
 • `/mcp list` - Show your connections
 • `/mcp tools [connection]` - Browse available tools
 • `/mcp disconnect [name]` - Remove a connection
 • `/mcp test [connection]` - Test connection health
 • `/mcp analytics` - View usage analytics
 
-*Available Services:*
+**Custom MCP Servers:**
+• `/mcp connect custom [name] [url]` - Connect to your own MCP server
+
+*Available Built-in Services:*
 • `supabase` - Database operations
 • `github` - Repository management
 • `slack` - Workspace integration
 
 *Examples:*
 • `/mcp connect supabase` - Quick Supabase setup
+• `/mcp connect custom google-ads https://your-server.com/mcp` - Custom server
 • `/mcp list` - Show all your connections
-• `/mcp tools my_database` - Show tools for specific connection
+• `/mcp tools google-ads` - Show tools for specific connection
+• `/mcp test google-ads` - Test custom connection
 """
         
         await say({

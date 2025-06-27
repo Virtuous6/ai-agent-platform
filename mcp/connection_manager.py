@@ -160,22 +160,16 @@ class MCPConnectionManager:
             List of user's MCP connections
         """
         try:
-            # Query database for user connections
-            query = """
-                SELECT * FROM mcp_connections 
-                WHERE user_id = %s
-            """
-            params = [user_id]
+            # Use Supabase client directly since we have the actual schema
+            query = self.db_logger.client.table("mcp_connections").select("*").eq("user_id", user_id)
             
             if not include_inactive:
-                query += " AND status = 'active'"
+                query = query.eq("status", "active")
             
-            query += " ORDER BY created_at DESC"
-            
-            result = await self.db_logger.execute_query(query, params)
+            result = query.order("created_at", desc=True).execute()
             
             connections = []
-            for row in result:
+            for row in result.data or []:
                 connection = self._row_to_connection(row)
                 connections.append(connection)
                 
@@ -530,19 +524,20 @@ class MCPConnectionManager:
             logger.error(f"Failed to log security event: {str(e)}")
     
     def _row_to_connection(self, row: Dict[str, Any]) -> MCPConnection:
-        """Convert database row to MCPConnection object."""
+        """Convert database row to MCPConnection object using actual schema."""
+        # Map actual database fields to expected MCPConnection fields
         return MCPConnection(
-            id=row['id'],
-            user_id=row['user_id'],
-            connection_name=row['connection_name'],
-            mcp_type=row['mcp_type'],
-            connection_config=row['connection_config'],
-            credential_reference=row['credential_reference'],
-            display_name=row['display_name'],
-            description=row['description'],
-            status=row['status'],
-            tools_available=row['tools_available'] or [],
-            tool_schemas=row['tool_schemas'] or {},
-            created_at=row['created_at'],
-            last_used=row['last_used']
+            id=row.get('id'),
+            user_id=row.get('user_id'),
+            connection_name=row.get('connection_name'),
+            mcp_type=row.get('service_name', 'unknown'),  # Use service_name as mcp_type
+            connection_config={'url': row.get('mcp_server_url', '')},  # Create config with server URL
+            credential_reference=row.get('credentials_encrypted'),
+            display_name=row.get('connection_name'),  # Use connection_name as display_name
+            description=f"MCP connection to {row.get('service_name', 'unknown service')}",
+            status=row.get('status', 'unknown'),
+            tools_available=[],  # Will be populated by default tools mapping
+            tool_schemas={},
+            created_at=row.get('created_at'),
+            last_used=row.get('last_used')
         ) 
