@@ -841,6 +841,120 @@ class SupabaseLogger:
         
         return input_cost + output_cost
 
+    async def execute_query(self, query: str, params: Optional[Dict[str, Any]] = None) -> List[Dict[str, Any]]:
+        """
+        Execute a custom SQL query against the database.
+        
+        Args:
+            query: SQL query to execute
+            params: Optional parameters for the query
+            
+        Returns:
+            List of query results
+        """
+        try:
+            # For Supabase, we'll use RPC (Remote Procedure Call) for custom queries
+            # This is a safer approach than raw SQL execution
+            
+            # For now, return empty results for unsupported queries
+            # In production, you'd implement specific RPC functions for each query type
+            logger.warning(f"Custom query execution not fully implemented: {query[:100]}...")
+            return []
+            
+        except Exception as e:
+            logger.error(f"Error executing query: {str(e)}")
+            return []
+
+    async def get_system_metrics(self, metric_type: str = "performance") -> Dict[str, Any]:
+        """
+        Get system metrics for the improvement orchestrator.
+        
+        Args:
+            metric_type: Type of metrics to retrieve (performance, cost, activity, etc.)
+            
+        Returns:
+            Dictionary containing system metrics
+        """
+        try:
+            if metric_type == "performance":
+                # Get performance metrics
+                agent_perf = await self.get_agent_performance(days=7)
+                return {
+                    "total_agents": len(set(a.get("agent_name") for a in agent_perf)),
+                    "avg_response_time": sum(a.get("response_time_avg", 0) for a in agent_perf) / len(agent_perf) if agent_perf else 0,
+                    "avg_success_rate": sum(a.get("success_rate", 0) for a in agent_perf) / len(agent_perf) if agent_perf else 0,
+                    "total_requests": sum(a.get("request_count", 0) for a in agent_perf)
+                }
+            
+            elif metric_type == "cost":
+                # Get cost metrics (simplified)
+                return {
+                    "daily_cost": 0.0,  # Would calculate from token_usage table
+                    "weekly_cost": 0.0,
+                    "monthly_cost": 0.0,
+                    "cost_trend": "stable"
+                }
+            
+            elif metric_type == "activity":
+                # Get user activity metrics
+                analytics = await self.get_conversation_analytics(days=7)
+                return {
+                    "total_conversations": analytics.get("total_conversations", 0),
+                    "total_messages": analytics.get("total_messages", 0),
+                    "daily_average": analytics.get("total_conversations", 0) / 7,
+                    "activity_level": "normal"
+                }
+            
+            else:
+                return {"error": f"Unknown metric type: {metric_type}"}
+                
+        except Exception as e:
+            logger.error(f"Error getting system metrics: {str(e)}")
+            return {}
+
+    async def count_active_issues(self) -> int:
+        """
+        Count active issues in the system.
+        
+        Returns:
+            Number of active issues
+        """
+        try:
+            # This would query for error messages, failed workflows, etc.
+            # For now, return 0 as a safe default
+            return 0
+            
+        except Exception as e:
+            logger.error(f"Error counting active issues: {str(e)}")
+            return 0
+
+    async def measure_user_activity(self, hours: int = 1) -> float:
+        """
+        Measure user activity level in the specified time period.
+        
+        Args:
+            hours: Number of hours to look back
+            
+        Returns:
+            Activity level (0.0 to 1.0, where 1.0 is high activity)
+        """
+        try:
+            from_time = (datetime.now(timezone.utc) - timedelta(hours=hours)).isoformat()
+            
+            # Get recent messages
+            messages = self.client.table("messages").select("id").gte("timestamp", from_time).execute()
+            message_count = len(messages.data) if messages.data else 0
+            
+            # Convert to activity level (normalize based on expected volume)
+            # Assuming 10 messages per hour is "normal" activity
+            activity_level = min(message_count / (10 * hours), 1.0)
+            
+            return activity_level
+            
+        except Exception as e:
+            logger.error(f"Error measuring user activity: {str(e)}")
+            return 0.0
+
     async def log_event(self, event_type: str, event_data: Dict[str, Any], 
                        user_id: Optional[str] = None) -> bool:
         """
