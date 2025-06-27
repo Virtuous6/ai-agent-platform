@@ -306,7 +306,7 @@ Provide a helpful, friendly response."""
             else:
                 return {
                     "success": False,
-                    "message": f"❌ Unknown command: {command}\n\nAvailable commands:\n• `/improve` - Improve your last workflow\n• `/save-workflow` - Save current workflow\n• `/list-workflows` - Show your workflows\n• `/edit-workflow` - Edit a saved workflow\n• `/feedback` - Provide general feedback"
+                    "message": f"❌ Unknown command: {command}\n\nAvailable commands:\n• `/improve` - Improve your last workflow\n• `/save-workflow` - Save current workflow\n• `/list-workflows` - Show your workflows\n• `/edit-workflow` - Edit a saved workflow\n• `/suggest` - Provide general feedback"
                 }
                 
         except Exception as e:
@@ -576,7 +576,7 @@ Provide a helpful, friendly response."""
 
     def _extract_feedback_content(self, message_content: str) -> str:
         """Extract feedback content from message."""
-        return message_content.replace("/feedback", "").strip()
+        return message_content.replace("/suggest", "").strip()
 
     async def _save_new_workflow(self, workflow_data: Dict[str, Any], user_id: str) -> str:
         """Save a new workflow."""
@@ -699,6 +699,43 @@ Provide a helpful, friendly response."""
     def get_user_feedback(self, user_id: str) -> List[UserFeedback]:
         """Get all feedback from a user."""
         return [f for f in self.user_feedback.values() if f.user_id == user_id]
+
+    async def handle_command(self, command_type: str, user_id: str, channel_id: str, command_text: str) -> Dict[str, Any]:
+        """
+        Handle command from Slack bot - adapter for process_feedback_command.
+        
+        Args:
+            command_type: Type of command (improve, save-workflow, etc.)
+            user_id: Slack user ID
+            channel_id: Slack channel ID  
+            command_text: Full command text including command
+            
+        Returns:
+            Response dictionary with message and success status
+        """
+        try:
+            # Build context from available information
+            context = {
+                "user_id": user_id,
+                "channel_id": channel_id,
+                "conversation_id": f"slack_{channel_id}_{user_id}",
+                "timestamp": datetime.utcnow().isoformat()
+            }
+            
+            # Call the main processing method
+            return await self.process_feedback_command(
+                command=command_type,
+                user_id=user_id,
+                message_content=command_text,
+                context=context
+            )
+            
+        except Exception as e:
+            logger.error(f"Error in handle_command: {str(e)}")
+            return {
+                "success": False,
+                "message": f"❌ Error processing command: {str(e)}"
+            }
 
     async def close(self):
         """Clean up resources."""

@@ -34,11 +34,11 @@ async def demo_feedback_system():
     print(f"📝 Response:\n{result['message']}")
     saved_workflow_id = result.get('workflow_id')
     
-    print("\n3️⃣ **Testing /feedback**")
+    print("\n3️⃣ **Testing /suggest**")
     result = await handler.process_feedback_command(
         command="feedback",
         user_id="demo_user",
-        message_content="/feedback This system is amazing! Could be faster though.",
+        message_content="/suggest This system is amazing! Could be faster though.",
         context={"conversation_id": "demo_conv_1"}
     )
     print(f"✅ Success: {result['success']}")

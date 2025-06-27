@@ -31,7 +31,7 @@ async def test_basic_functionality():
     result = await handler.process_feedback_command(
         command="feedback",
         user_id="test_user",
-        message_content="/feedback This is a test feedback",
+        message_content="/suggest This is a test feedback",
         context={"conversation_id": "test"}
     )
     
@@ -191,11 +191,11 @@ class TestFeedbackHandler:
     
     @pytest.mark.asyncio
     async def test_feedback_command(self, handler):
-        """Test /feedback command."""
+        """Test /suggest command."""
         result = await handler.process_feedback_command(
             command="feedback",
             user_id="test_user",
-            message_content="/feedback The system could be faster",
+            message_content="/suggest The system could be faster",
             context={"conversation_id": "test_conv"}
         )
         
@@ -234,7 +234,7 @@ class TestFeedbackHandler:
     
     def test_extract_feedback_content(self, handler):
         """Test feedback content extraction."""
-        result = handler._extract_feedback_content("/feedback This is my feedback")
+        result = handler._extract_feedback_content("/suggest This is my feedback")
         assert result == "This is my feedback"
     
     @pytest.mark.asyncio

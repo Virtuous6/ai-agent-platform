@@ -142,8 +142,8 @@ class AIAgentSlackBot:
             await ack()
             await self._handle_feedback_command("list-workflows", command, say, client)
         
-        @self.app.command("/feedback")
-        async def handle_feedback_command(ack, say, command, client):
+        @self.app.command("/suggest")
+        async def handle_suggest_command(ack, say, command, client):
             await ack()
             await self._handle_feedback_command("feedback", command, say, client)
         
@@ -907,7 +907,7 @@ class AIAgentSlackBot:
         
         # Footer
         message_parts.append(f"\n{'=' * 50}")
-        message_parts.append("💡 *Commands:* `/improve` `/save-workflow` `/feedback`")
+        message_parts.append("💡 *Commands:* `/improve` `/save-workflow` `/suggest`")
         message_parts.append("🔄 Metrics refresh automatically")
         
         return "\n".join(message_parts)

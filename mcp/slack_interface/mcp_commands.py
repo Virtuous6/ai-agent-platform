@@ -87,7 +87,7 @@ class MCPSlackCommands:
             
             if subcommand == "connect":
                 service = parts[1] if len(parts) > 1 else None
-                await self._handle_connect_command(user_id, service, client)
+                await self._handle_connect_command(user_id, service, client, say)
                 
             elif subcommand == "list":
                 await self._handle_list_command(user_id, say)
@@ -117,21 +117,27 @@ class MCPSlackCommands:
                 "response_type": "ephemeral"
             })
     
-    async def _handle_connect_command(self, user_id: str, service: Optional[str], client):
+    async def _handle_connect_command(self, user_id: str, service: Optional[str], client, say):
         """Handle /mcp connect [service] command."""
         if service:
             # Direct connection to specific service
             if service.lower() in self.run_cards:
-                await self._show_service_modal(user_id, service.lower(), client)
+                await say({
+                    "text": f"🔌 **Connect to {service.title()}**\n\nConnection setup for {service} would be initiated here. This feature is under development!",
+                    "response_type": "ephemeral"
+                })
             else:
-                await client.chat_postEphemeral(
-                    channel=user_id,
-                    user=user_id,
-                    text=f"❌ Unknown service: {service}. Available services: {', '.join(self.run_cards.keys())}"
-                )
+                await say({
+                    "text": f"❌ Unknown service: {service}. Available services: {', '.join(self.run_cards.keys())}",
+                    "response_type": "ephemeral"
+                })
         else:
-            # Show service selection modal
-            await self._show_connection_selection_modal(user_id, client)
+            # Show service selection via text instead of modal for compatibility
+            available_services = ', '.join(self.run_cards.keys())
+            await say({
+                "text": f"🔌 **MCP Service Connection**\n\nAvailable services: {available_services}\n\nUse `/mcp connect [service]` to connect to a specific service.\n\nExample: `/mcp connect supabase`",
+                "response_type": "ephemeral"
+            })
     
     async def _handle_list_command(self, user_id: str, say):
         """Handle /mcp list command."""
