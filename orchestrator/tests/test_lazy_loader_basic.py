@@ -8,7 +8,7 @@ import os
 from datetime import datetime
 
 # Add the project root to the path
-sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(__file__))))
 
 from orchestrator.lazy_loader import LazyAgentLoader, AgentConfiguration
 

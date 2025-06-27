@@ -1,16 +1,17 @@
 """
 Filename: universal_agent.py
-Purpose: Configuration-driven universal agent for dynamic specialist creation
-Dependencies: langchain, openai, asyncio, logging, typing
+Purpose: Configuration-driven universal agent with full platform integration
+Dependencies: langchain, openai, asyncio, logging, typing, platform integrations
 
 This module is part of the AI Agent Platform self-improvement system.
-Creates specialist agents dynamically based on configuration without hard-coded classes.
+Creates specialist agents dynamically based on configuration with full platform integration.
 """
 
 import asyncio
 import logging
 import os
 import json
+import uuid
 from typing import Dict, Any, Optional, List, Tuple
 from datetime import datetime
 from enum import Enum
@@ -20,6 +21,12 @@ from langchain_core.prompts import ChatPromptTemplate, SystemMessagePromptTempla
 from langchain_core.messages import BaseMessage, HumanMessage, AIMessage, SystemMessage
 from langchain_community.callbacks import get_openai_callback
 from pydantic import BaseModel
+
+# Platform integrations
+from database.supabase_logger import SupabaseLogger
+from memory.vector_store import VectorMemoryStore
+from events.event_bus import EventBus, EventType
+from orchestrator.workflow_tracker import WorkflowTracker
 
 logger = logging.getLogger(__name__)
 
@@ -42,10 +49,16 @@ class ToolCapability(BaseModel):
 
 class UniversalAgent:
     """
-    Configuration-driven universal agent that can be specialized for any domain.
+    Configuration-driven universal agent with full platform integration.
     
-    Uses the same LLM patterns as existing agents but allows dynamic configuration
-    of specialty, prompts, temperature, and tools without creating new classes.
+    Features:
+    - Configuration-driven specialist creation
+    - Supabase logging for all interactions
+    - Event-driven communication
+    - Vector memory integration
+    - Workflow tracking
+    - Tools registry integration
+    - Self-improvement capabilities
     """
     
     def __init__(self, 
@@ -55,9 +68,14 @@ class UniversalAgent:
                  tools: Optional[List[ToolCapability]] = None,
                  model_name: str = "gpt-3.5-turbo-0125",
                  max_tokens: int = 500,
-                 agent_id: Optional[str] = None):
+                 agent_id: Optional[str] = None,
+                 # Platform integrations
+                 supabase_logger: Optional[SupabaseLogger] = None,
+                 vector_store: Optional[VectorMemoryStore] = None,
+                 event_bus: Optional[EventBus] = None,
+                 workflow_tracker: Optional[WorkflowTracker] = None):
         """
-        Initialize the Universal Agent with specific configuration.
+        Initialize the Universal Agent with platform integrations.
         
         Args:
             specialty: The specialty area (e.g., "Python Optimization", "Data Analysis")
@@ -67,9 +85,15 @@ class UniversalAgent:
             model_name: OpenAI model to use
             max_tokens: Maximum tokens for responses
             agent_id: Unique identifier for this agent instance
+            
+            # Platform integrations
+            supabase_logger: Database logging integration
+            vector_store: Memory/context integration
+            event_bus: Event-driven communication
+            workflow_tracker: Workflow analysis integration
         """
         
-        # Configuration
+        # Core configuration
         self.specialty = specialty
         self.system_prompt = system_prompt
         self.temperature = temperature
@@ -78,7 +102,7 @@ class UniversalAgent:
         self.agent_id = agent_id or f"universal_{specialty.lower().replace(' ', '_')}"
         self.tools = tools or []
         
-        # Initialize the LLM
+        # Initialize LLMs
         self.llm = ChatOpenAI(
             model=model_name,
             temperature=temperature,
@@ -86,7 +110,6 @@ class UniversalAgent:
             max_tokens=max_tokens,
         )
         
-        # Initialize analysis LLM (more focused, lower temperature for meta-analysis)
         self.analysis_llm = ChatOpenAI(
             model=model_name,
             temperature=0.2,
@@ -94,11 +117,18 @@ class UniversalAgent:
             max_tokens=200,
         )
         
+        # Platform integrations
+        self.supabase_logger = supabase_logger or SupabaseLogger()
+        self.vector_store = vector_store or VectorMemoryStore()
+        self.event_bus = event_bus
+        self.workflow_tracker = workflow_tracker
+        self.tool_registry = {}  # For tools registry integration
+        
         # Initialize prompt templates
         self.main_prompt = self._create_main_prompt()
         self.improvement_prompt = self._create_improvement_prompt()
         
-        # Conversation and performance tracking
+        # Performance tracking
         self.conversation_history = []
         self.performance_metrics = {
             "total_interactions": 0,
@@ -110,7 +140,11 @@ class UniversalAgent:
             "improvement_suggestions": []
         }
         
-        logger.info(f"Universal Agent '{self.specialty}' initialized with model: {model_name}")
+        # Register event handlers if event bus available
+        if self.event_bus:
+            asyncio.create_task(self._register_event_handlers())
+        
+        logger.info(f"Universal Agent '{self.specialty}' initialized with full platform integration")
     
     def _create_main_prompt(self) -> ChatPromptTemplate:
         """Create the main conversation prompt template based on specialty."""
@@ -126,12 +160,19 @@ class UniversalAgent:
 **Your Specialty:** {self.specialty}
 
 **Your Role in the AI Agent Platform:**
-- You are a specialized expert integrated into Slack
+- You are a specialized expert integrated into the self-improving platform
 - Provide expert-level assistance in your specialty area
 - Maintain professional yet approachable communication
 - Share best practices and industry standards
 - Suggest optimizations and improvements
-- Escalate to other specialists when appropriate
+- Learn from every interaction to continuously improve
+- Collaborate with other agents through the platform
+
+**Platform Integration:**
+- All interactions are logged for learning and improvement
+- Your responses contribute to platform knowledge
+- You can access relevant context from previous conversations
+- Your insights help train other agents and improve workflows
 
 **Communication Guidelines:**
 1. Be precise and technically accurate in your specialty
@@ -139,17 +180,19 @@ class UniversalAgent:
 3. Provide actionable recommendations
 4. Use examples and practical applications when helpful
 5. Be proactive in suggesting improvements or alternatives
-6. Keep responses concise but comprehensive for Slack format
-7. Use appropriate emojis to enhance readability (not excessive){tools_description}
+6. Keep responses concise but comprehensive
+7. Learn from each interaction to improve future responses{tools_description}
 
 **Quality Standards:**
 - Always prioritize accuracy and helpfulness
 - If uncertain about something outside your expertise, be honest
 - Suggest collaboration with other agents when beneficial
-- Focus on providing value that leverages your specialty
+- Focus on providing value that leverages your specialized knowledge
+- Contribute to the platform's continuous learning
 
 Current conversation context: {{context}}
-Recent conversation history: {{history}}"""
+Recent conversation history: {{history}}
+Relevant context from memory: {{memory_context}}"""
 
         human_template = f"""User message: {{message}}
 
@@ -206,7 +249,7 @@ Provide improvement analysis for the {self.specialty} specialist:"""
     
     async def process_message(self, message: str, context: Dict[str, Any]) -> Dict[str, Any]:
         """
-        Process a user message using specialized LLM intelligence.
+        Process a user message with full platform integration.
         
         Args:
             message: User message content
@@ -216,9 +259,21 @@ Provide improvement analysis for the {self.specialty} specialist:"""
             Dictionary containing response and metadata
         """
         start_time = datetime.utcnow()
+        run_id = str(uuid.uuid4())
         
         try:
             logger.info(f"Universal Agent '{self.specialty}' processing: '{message[:50]}...'")
+            
+            # Start workflow tracking
+            if self.workflow_tracker:
+                await self.workflow_tracker.start_workflow(run_id, {
+                    "agent_id": self.agent_id,
+                    "specialty": self.specialty,
+                    "message_preview": message[:100]
+                })
+            
+            # Retrieve relevant memory context
+            memory_context = await self._get_memory_context(message, context)
             
             # Prepare conversation history context
             history_context = self._format_conversation_history(context.get("conversation_history", []))
@@ -230,7 +285,7 @@ Provide improvement analysis for the {self.specialty} specialist:"""
             try:
                 with get_openai_callback() as cb:
                     response = await self._generate_specialist_response(
-                        message, context, history_context, tool_results
+                        message, context, history_context, memory_context, tool_results
                     )
                 tokens_used = cb.total_tokens
                 input_tokens = cb.prompt_tokens
@@ -239,7 +294,7 @@ Provide improvement analysis for the {self.specialty} specialist:"""
             except Exception as e:
                 logger.warning(f"OpenAI callback failed, proceeding without tracking: {e}")
                 response = await self._generate_specialist_response(
-                    message, context, history_context, tool_results
+                    message, context, history_context, memory_context, tool_results
                 )
                 tokens_used = 0
                 input_tokens = 0
@@ -249,22 +304,48 @@ Provide improvement analysis for the {self.specialty} specialist:"""
             # Calculate processing time
             processing_time_ms = (datetime.utcnow() - start_time).total_seconds() * 1000
             
+            # Log to Supabase
+            conversation_id = context.get("conversation_id")
+            message_id = await self._log_to_supabase(
+                conversation_id, message, response, context, 
+                tokens_used, input_tokens, output_tokens, cost, processing_time_ms
+            )
+            
+            # Store in memory
+            await self._store_memory(conversation_id, message_id, message, response, context)
+            
+            # Publish events
+            await self._publish_events(run_id, message, response, context, processing_time_ms)
+            
             # Update performance metrics
             self._update_performance_metrics(tokens_used, cost, processing_time_ms, True)
             
+            # Complete workflow tracking
+            if self.workflow_tracker:
+                await self.workflow_tracker.complete_workflow(run_id, {
+                    "success": True,
+                    "response_length": len(response),
+                    "tokens_used": tokens_used,
+                    "cost": cost
+                })
+            
             # Log the interaction
             interaction_log = {
+                "run_id": run_id,
                 "timestamp": start_time.isoformat(),
                 "message_preview": message[:100],
                 "specialty": self.specialty,
                 "user_id": context.get("user_id"),
                 "channel_id": context.get("channel_id"),
+                "conversation_id": conversation_id,
+                "message_id": message_id,
                 "tokens_used": tokens_used,
                 "input_tokens": input_tokens,
                 "output_tokens": output_tokens,
                 "cost": cost,
                 "processing_time_ms": processing_time_ms,
-                "tool_results": tool_results
+                "tool_results": tool_results,
+                "memory_context_used": bool(memory_context)
             }
             self.conversation_history.append(interaction_log)
             
@@ -273,20 +354,26 @@ Provide improvement analysis for the {self.specialty} specialist:"""
                 "agent_id": self.agent_id,
                 "specialty": self.specialty,
                 "conversation_type": "specialist",
-                "confidence": 0.9,  # High confidence for specialist
+                "confidence": 0.9,
                 "tokens_used": tokens_used,
                 "input_tokens": input_tokens,
                 "output_tokens": output_tokens,
                 "processing_cost": cost,
                 "processing_time_ms": processing_time_ms,
                 "tool_results": tool_results,
+                "conversation_id": conversation_id,
+                "message_id": message_id,
+                "run_id": run_id,
+                "memory_context_used": bool(memory_context),
+                "events_published": ["agent_task_completed"],
                 "metadata": {
                     "model_used": self.llm.model_name,
                     "temperature": self.llm.temperature,
                     "agent_id": self.agent_id,
                     "specialty": self.specialty,
                     "tools_used": [tool.name for tool in self.tools if tool.enabled],
-                    "performance_score": self.performance_metrics.get("average_quality_score", 0.0)
+                    "performance_score": self.performance_metrics.get("average_quality_score", 0.0),
+                    "platform_integrated": True
                 }
             }
             
@@ -297,6 +384,21 @@ Provide improvement analysis for the {self.specialty} specialist:"""
             processing_time_ms = (datetime.utcnow() - start_time).total_seconds() * 1000
             self._update_performance_metrics(0, 0.0, processing_time_ms, False)
             
+            # Log failure event
+            if self.event_bus:
+                await self.event_bus.publish(
+                    EventType.AGENT_ERROR,
+                    {"agent_id": self.agent_id, "error": str(e), "specialty": self.specialty},
+                    source=self.agent_id
+                )
+            
+            # Complete workflow tracking with failure
+            if self.workflow_tracker:
+                await self.workflow_tracker.complete_workflow(run_id, {
+                    "success": False,
+                    "error": str(e)
+                })
+            
             return {
                 "response": f"I apologize, but I'm having trouble processing your {self.specialty} request right now. Please try again or contact support if this continues.",
                 "agent_id": self.agent_id,
@@ -305,7 +407,9 @@ Provide improvement analysis for the {self.specialty} specialist:"""
                 "confidence": 0.0,
                 "error": str(e),
                 "tokens_used": 0,
-                "processing_time_ms": processing_time_ms
+                "processing_time_ms": processing_time_ms,
+                "run_id": run_id,
+                "platform_integrated": True
             }
     
     async def _execute_tools(self, message: str, context: Dict[str, Any]) -> Dict[str, Any]:
@@ -329,12 +433,13 @@ Provide improvement analysis for the {self.specialty} specialist:"""
         return tool_results
     
     async def _generate_specialist_response(self, message: str, context: Dict[str, Any], 
-                                          history_context: str, tool_results: Dict[str, Any]) -> str:
+                                          history_context: str, memory_context: str, 
+                                          tool_results: Dict[str, Any]) -> str:
         """Generate the specialist response using the LLM."""
         
         main_chain = self.main_prompt | self.llm
         
-        # Prepare context including tool results
+        # Prepare context including tool results and memory
         enhanced_context = self._format_context(context)
         if tool_results:
             enhanced_context += f"\nTool Results: {json.dumps(tool_results, indent=2)}"
@@ -342,7 +447,8 @@ Provide improvement analysis for the {self.specialty} specialist:"""
         response = await main_chain.ainvoke({
             "message": message,
             "context": enhanced_context,
-            "history": history_context
+            "history": history_context,
+            "memory_context": memory_context
         })
         
         return response.content
@@ -440,6 +546,202 @@ Provide improvement analysis for the {self.specialty} specialist:"""
         
         return ", ".join(context_parts) if context_parts else f"Standard {self.specialty} conversation"
     
+    async def _register_event_handlers(self):
+        """Register event handlers for platform communication."""
+        if not self.event_bus:
+            return
+            
+        try:
+            # Subscribe to relevant events
+            await self.event_bus.subscribe(
+                self.agent_id,
+                [
+                    EventType.IMPROVEMENT_APPLIED.value,
+                    EventType.PATTERN_DISCOVERED.value,
+                    EventType.FEEDBACK_RECEIVED.value
+                ],
+                self._handle_platform_event
+            )
+            logger.info(f"Universal Agent '{self.specialty}' subscribed to platform events")
+        except Exception as e:
+            logger.error(f"Failed to register event handlers: {e}")
+    
+    async def _handle_platform_event(self, event: Dict[str, Any]):
+        """Handle incoming platform events."""
+        try:
+            event_type = event.get('type')
+            event_data = event.get('data', {})
+            
+            if event_type == EventType.IMPROVEMENT_APPLIED.value:
+                await self._apply_improvement(event_data)
+            elif event_type == EventType.PATTERN_DISCOVERED.value:
+                await self._learn_from_pattern(event_data)
+            elif event_type == EventType.FEEDBACK_RECEIVED.value:
+                await self._process_feedback(event_data)
+                
+        except Exception as e:
+            logger.error(f"Error handling platform event: {e}")
+    
+    async def _get_memory_context(self, message: str, context: Dict[str, Any]) -> str:
+        """Retrieve relevant context from vector memory."""
+        if not self.vector_store:
+            return ""
+        
+        try:
+            user_id = context.get("user_id")
+            similar_memories = await self.vector_store.search_similar_memories(
+                message, user_id=user_id, limit=3, similarity_threshold=0.7
+            )
+            
+            if similar_memories:
+                context_parts = []
+                for memory in similar_memories:
+                    context_parts.append(f"- {memory.get('content_summary', '')[:100]}")
+                return f"Relevant context from previous conversations:\n" + "\n".join(context_parts)
+            
+        except Exception as e:
+            logger.warning(f"Failed to retrieve memory context: {e}")
+        
+        return ""
+    
+    async def _log_to_supabase(self, conversation_id: str, message: str, response: str, 
+                             context: Dict[str, Any], tokens_used: int, input_tokens: int,
+                             output_tokens: int, cost: float, processing_time_ms: float) -> str:
+        """Log interaction to Supabase database."""
+        if not self.supabase_logger:
+            return ""
+        
+        try:
+            message_id = await self.supabase_logger.log_message(
+                conversation_id=conversation_id or str(uuid.uuid4()),
+                user_id=context.get("user_id", "unknown"),
+                content=message,
+                message_type="user_message",
+                agent_type=self.specialty,
+                agent_response={"response": response, "agent_id": self.agent_id},
+                processing_time_ms=processing_time_ms,
+                input_tokens=input_tokens,
+                output_tokens=output_tokens,
+                total_tokens=tokens_used,
+                model_used=self.model_name,
+                estimated_cost=cost
+            )
+            return message_id
+            
+        except Exception as e:
+            logger.error(f"Failed to log to Supabase: {e}")
+            return ""
+    
+    async def _store_memory(self, conversation_id: str, message_id: str, 
+                          message: str, response: str, context: Dict[str, Any]):
+        """Store interaction in vector memory."""
+        if not self.vector_store:
+            return
+        
+        try:
+            # Store user message
+            await self.vector_store.store_conversation_memory(
+                conversation_id=conversation_id or str(uuid.uuid4()),
+                message_id=message_id or str(uuid.uuid4()),
+                content=message,
+                user_id=context.get("user_id", "unknown"),
+                content_type="message",
+                metadata={"agent_specialty": self.specialty}
+            )
+            
+            # Store agent response
+            await self.vector_store.store_conversation_memory(
+                conversation_id=conversation_id or str(uuid.uuid4()),
+                message_id=str(uuid.uuid4()),
+                content=response,
+                user_id=context.get("user_id", "unknown"),
+                content_type="agent_response",
+                metadata={"agent_id": self.agent_id, "specialty": self.specialty}
+            )
+            
+        except Exception as e:
+            logger.warning(f"Failed to store memory: {e}")
+    
+    async def _publish_events(self, run_id: str, message: str, response: str, 
+                            context: Dict[str, Any], processing_time_ms: float):
+        """Publish events about the interaction."""
+        if not self.event_bus:
+            return
+        
+        try:
+            # Publish task completion event
+            await self.event_bus.publish(
+                EventType.AGENT_ACTIVATED,
+                {
+                    "agent_id": self.agent_id,
+                    "specialty": self.specialty,
+                    "run_id": run_id,
+                    "user_id": context.get("user_id"),
+                    "success": True,
+                    "duration_ms": processing_time_ms,
+                    "message_length": len(message),
+                    "response_length": len(response)
+                },
+                source=self.agent_id
+            )
+            
+        except Exception as e:
+            logger.warning(f"Failed to publish events: {e}")
+    
+    async def _apply_improvement(self, improvement_data: Dict[str, Any]):
+        """Apply platform improvement suggestions."""
+        try:
+            improvement_type = improvement_data.get("type")
+            if improvement_type == "prompt_optimization":
+                # Update system prompt based on improvement
+                if "new_prompt" in improvement_data:
+                    self.system_prompt = improvement_data["new_prompt"]
+                    self.main_prompt = self._create_main_prompt()
+                    logger.info(f"Applied prompt improvement for {self.specialty}")
+                    
+        except Exception as e:
+            logger.error(f"Failed to apply improvement: {e}")
+    
+    async def _learn_from_pattern(self, pattern_data: Dict[str, Any]):
+        """Learn from discovered patterns."""
+        try:
+            pattern_type = pattern_data.get("pattern_type")
+            if pattern_type == "successful_interaction":
+                # Store successful interaction patterns
+                self.performance_metrics["improvement_suggestions"].append({
+                    "type": "pattern_learning",
+                    "pattern": pattern_data,
+                    "timestamp": datetime.utcnow().isoformat()
+                })
+                
+        except Exception as e:
+            logger.error(f"Failed to learn from pattern: {e}")
+    
+    async def _process_feedback(self, feedback_data: Dict[str, Any]):
+        """Process user feedback for continuous improvement."""
+        try:
+            feedback_score = feedback_data.get("score", 0.0)
+            feedback_text = feedback_data.get("text", "")
+            
+            # Update feedback metrics
+            total_interactions = self.performance_metrics["total_interactions"]
+            current_score = self.performance_metrics["user_feedback_score"]
+            
+            self.performance_metrics["user_feedback_score"] = (
+                (current_score * (total_interactions - 1) + feedback_score) / total_interactions
+            )
+            
+            # Store feedback for analysis
+            self.performance_metrics["improvement_suggestions"].append({
+                "type": "user_feedback",
+                "score": feedback_score,
+                "text": feedback_text,
+                "timestamp": datetime.utcnow().isoformat()
+            })
+            
+        except Exception as e:
+            logger.error(f"Failed to process feedback: {e}")
+    
     def get_agent_stats(self) -> Dict[str, Any]:
         """Get comprehensive statistics about this agent instance."""
         success_rate = 0.0
@@ -463,6 +765,13 @@ Provide improvement analysis for the {self.specialty} specialist:"""
             "available_tools": [tool.name for tool in self.tools],
             "enabled_tools": [tool.name for tool in self.tools if tool.enabled],
             "recent_improvement_suggestions": self.performance_metrics["improvement_suggestions"][-5:],
+            "platform_integrations": {
+                "supabase_logging": bool(self.supabase_logger),
+                "vector_memory": bool(self.vector_store),
+                "event_communication": bool(self.event_bus),
+                "workflow_tracking": bool(self.workflow_tracker),
+                "tools_registry": bool(self.tool_registry)
+            },
             "created_at": datetime.utcnow().isoformat()
         }
     
@@ -501,24 +810,29 @@ Provide improvement analysis for the {self.specialty} specialist:"""
             logger.info(f"Recreated prompts for Universal Agent '{self.specialty}'")
     
     async def close(self):
-        """
-        Close the agent and cleanup resources.
-        
-        This method ensures proper cleanup of HTTP connections
-        used by the OpenAI clients when shutting down.
-        """
+        """Close the agent and cleanup platform resources."""
         try:
             logger.info(f"Closing Universal Agent '{self.specialty}' connections...")
             
-            # Close the main LLM client
+            # Close LLM clients
             if hasattr(self.llm, 'client') and hasattr(self.llm.client, 'close'):
                 await self.llm.client.close()
             
-            # Close the analysis LLM client
             if hasattr(self.analysis_llm, 'client') and hasattr(self.analysis_llm.client, 'close'):
                 await self.analysis_llm.client.close()
             
-            # Close any tool resources
+            # Close platform integrations
+            if self.vector_store:
+                await self.vector_store.close()
+            
+            if self.supabase_logger:
+                await self.supabase_logger.close()
+            
+            # Unsubscribe from events
+            if self.event_bus:
+                await self.event_bus.unsubscribe(self.agent_id)
+            
+            # Close tool resources
             for tool in self.tools:
                 if hasattr(tool, 'cleanup') and callable(tool.cleanup):
                     try:
@@ -526,7 +840,7 @@ Provide improvement analysis for the {self.specialty} specialist:"""
                     except Exception as e:
                         logger.warning(f"Error cleaning up tool '{tool.name}': {e}")
                 
-            logger.info(f"Universal Agent '{self.specialty}' connections closed successfully")
+            logger.info(f"Universal Agent '{self.specialty}' closed successfully")
             
         except Exception as e:
             logger.warning(f"Error closing Universal Agent '{self.specialty}': {e}") 

@@ -12,15 +12,13 @@ from datetime import datetime
 import json
 
 try:
-    from langgraph import StateGraph, END
-    from langgraph.graph import CompiledGraph
+    from langgraph.graph import StateGraph, END
     from langchain_core.runnables import RunnableConfig
     LANGGRAPH_AVAILABLE = True
 except ImportError:
     # Graceful fallback when LangGraph not available
     LANGGRAPH_AVAILABLE = False
     StateGraph = None
-    CompiledGraph = None
     END = None
 
 from .state_schemas import RunbookState

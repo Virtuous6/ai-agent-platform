@@ -21,6 +21,8 @@ class WorkflowRun:
     user_id: str
     conversation_id: Optional[str] = None
     trigger_message: Optional[str] = None
+    goal_id: Optional[str] = None
+    parent_goal_id: Optional[str] = None
     agents_used: List[str] = None
     tools_used: List[str] = None
     steps_completed: List[str] = None
@@ -59,7 +61,9 @@ class WorkflowTracker:
         
     async def start_workflow(self, workflow_type: str, user_id: str, 
                            trigger_message: str = None,
-                           conversation_id: str = None) -> str:
+                           conversation_id: str = None,
+                           goal_id: str = None,
+                           parent_goal_id: str = None) -> str:
         """Start tracking a new workflow execution."""
         run_id = str(uuid.uuid4())
         
@@ -68,7 +72,9 @@ class WorkflowTracker:
             workflow_type=workflow_type,
             user_id=user_id,
             conversation_id=conversation_id,
-            trigger_message=trigger_message
+            trigger_message=trigger_message,
+            goal_id=goal_id,
+            parent_goal_id=parent_goal_id
         )
         
         self.active_runs[run_id] = workflow_run
@@ -128,6 +134,10 @@ class WorkflowTracker:
         if metadata:
             workflow_run.metadata.update(metadata)
         
+        # Notify goal completion if linked
+        if workflow_run.goal_id and success:
+            await self._notify_goal_completion(workflow_run.goal_id, workflow_run)
+        
         # Save to database
         if self.db_logger:
             try:
@@ -145,7 +155,9 @@ class WorkflowTracker:
                     "agents_used": workflow_run.agents_used,
                     "tools_used": workflow_run.tools_used,
                     "steps_completed": workflow_run.steps_completed,
-                    "metadata": workflow_run.metadata
+                    "metadata": workflow_run.metadata,
+                    "goal_id": workflow_run.goal_id,
+                    "parent_goal_id": workflow_run.parent_goal_id
                 }
                 
                 self.db_logger.client.table("workflow_runs").update(update_data).eq("run_id", run_id).execute()
@@ -155,6 +167,29 @@ class WorkflowTracker:
         # Remove from active runs
         del self.active_runs[run_id]
     
+    async def _notify_goal_completion(self, goal_id: str, workflow_run: WorkflowRun):
+        """Notify goal manager when a workflow completes successfully."""
+        try:
+            # This will be implemented when we integrate with goal manager
+            logger.info(f"Workflow {workflow_run.run_id} completed for goal {goal_id}")
+            
+            # Future: await self.goal_manager.workflow_completed(goal_id, workflow_run)
+            
+        except Exception as e:
+            logger.error(f"Error notifying goal completion: {e}")
+    
+    async def get_workflows_for_goal(self, goal_id: str) -> List[Dict[str, Any]]:
+        """Get all workflows associated with a goal."""
+        if not self.db_logger:
+            return []
+        
+        try:
+            result = self.db_logger.client.table("workflow_runs").select("*").eq("goal_id", goal_id).execute()
+            return result.data if result.data else []
+        except Exception as e:
+            logger.error(f"Failed to get workflows for goal {goal_id}: {e}")
+            return []
+
     async def fail_workflow(self, run_id: str, error_message: str, 
                           error_details: Dict[str, Any] = None):
         """Mark a workflow as failed."""

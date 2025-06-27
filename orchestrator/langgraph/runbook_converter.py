@@ -12,13 +12,11 @@ from typing import Dict, Any, Optional, List, Callable
 from pathlib import Path
 
 try:
-    from langgraph import StateGraph, END
-    from langgraph.graph import CompiledGraph
+    from langgraph.graph import StateGraph, END
     LANGGRAPH_AVAILABLE = True
 except ImportError:
     LANGGRAPH_AVAILABLE = False
     StateGraph = None
-    CompiledGraph = None
     END = None
 
 from .state_schemas import RunbookState

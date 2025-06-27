@@ -7,7 +7,7 @@ import sys
 import os
 sys.path.append(os.path.dirname(os.path.dirname(os.path.dirname(__file__))))
 
-from cost_optimizer import CostOptimizer, CostOptimizationType
+from agents.improvement.cost_optimizer import CostOptimizer, CostOptimizationType
 
 async def test_cost_optimizer():
     """Test the Cost Optimization Engine."""

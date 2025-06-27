@@ -364,7 +364,7 @@ Provide the compressed prompt and analysis:"""
             
             # Log high-cost operations
             if estimated_cost > self.cost_thresholds["cost_per_interaction_max"]:
-                await self._log_high_cost_operation(agent_id, operation_data, estimated_cost)
+                await self._log_high_cost_operation(agent_id, operation_data)
             
             return {
                 "cost_tracked": estimated_cost,
@@ -1468,6 +1468,102 @@ Provide the compressed prompt and analysis:"""
                 })
         
         return drivers
+
+    async def _log_high_cost_operation(self, agent_id: str, operation_data: Dict[str, Any]):
+        """Log high-cost operations for analysis."""
+        try:
+            cost = operation_data.get("estimated_cost", 0.0)
+            if cost > self.cost_thresholds["cost_per_interaction_max"]:
+                logger.warning(f"High cost operation detected: ${cost:.4f} for agent {agent_id}")
+                
+                # Store high-cost operation
+                high_cost_entry = {
+                    "agent_id": agent_id,
+                    "cost": cost,
+                    "tokens": operation_data.get("total_tokens", 0),
+                    "model": operation_data.get("model_used", "unknown"),
+                    "timestamp": datetime.utcnow(),
+                    "query_preview": operation_data.get("query", "")[:100]
+                }
+                
+                # Add to cost issues tracking
+                if agent_id not in self.cost_issues:
+                    self.cost_issues[agent_id] = []
+                self.cost_issues[agent_id].append(high_cost_entry)
+                
+        except Exception as e:
+            logger.error(f"Error logging high-cost operation: {e}")
+
+    def _analyze_cost_trend(self, agent_id: str) -> str:
+        """Analyze cost trends for an agent."""
+        try:
+            if agent_id not in self.cost_metrics:
+                return "stable"
+            
+            metrics = self.cost_metrics[agent_id]
+            hourly_costs = list(metrics.hourly_costs.values())
+            
+            if len(hourly_costs) < 2:
+                return "stable"
+            
+            # Calculate trend over last few hours
+            recent_costs = hourly_costs[-6:]  # Last 6 hours
+            if len(recent_costs) >= 3:
+                avg_early = sum(recent_costs[:len(recent_costs)//2]) / (len(recent_costs)//2)
+                avg_late = sum(recent_costs[len(recent_costs)//2:]) / (len(recent_costs) - len(recent_costs)//2)
+                
+                if avg_late > avg_early * 1.2:
+                    return "increasing"
+                elif avg_late < avg_early * 0.8:
+                    return "decreasing"
+            
+            return "stable"
+            
+        except Exception as e:
+            logger.error(f"Error analyzing cost trend: {e}")
+            return "stable"
+
+    def _find_optimization_opportunities(self, cost_data: Dict[str, Any]) -> List[Dict[str, Any]]:
+        """Find cost optimization opportunities from analysis data."""
+        try:
+            opportunities = []
+            
+            # Analyze high token usage
+            for agent_id, metrics in self.cost_metrics.items():
+                if metrics.cost_per_token > 0.00002:  # High cost per token
+                    opportunities.append({
+                        "type": "model_optimization",
+                        "agent_id": agent_id,
+                        "current_cost": metrics.cost_per_token,
+                        "recommended_action": "Consider using gpt-3.5-turbo for routine tasks",
+                        "potential_savings": metrics.total_cost * 0.3
+                    })
+                
+                if metrics.cost_per_request > self.cost_thresholds["cost_per_interaction_max"]:
+                    opportunities.append({
+                        "type": "prompt_optimization", 
+                        "agent_id": agent_id,
+                        "current_cost": metrics.cost_per_request,
+                        "recommended_action": "Optimize prompts to reduce token usage",
+                        "potential_savings": metrics.total_cost * 0.2
+                    })
+            
+            # Check cache efficiency
+            cache_performance = self._get_cache_performance()
+            if cache_performance.get("hit_rate", 0) < self.cost_thresholds["cache_hit_rate_min"]:
+                opportunities.append({
+                    "type": "caching_improvement",
+                    "agent_id": "system",
+                    "current_hit_rate": cache_performance.get("hit_rate", 0),
+                    "recommended_action": "Improve query similarity matching for better caching",
+                    "potential_savings": sum(m.total_cost for m in self.cost_metrics.values()) * 0.15
+                })
+            
+            return opportunities
+            
+        except Exception as e:
+            logger.error(f"Error finding optimization opportunities: {e}")
+            return []
 
 # Additional helper methods would continue here...
 # (Due to length constraints, showing core functionality) 

@@ -13,7 +13,7 @@ import sys
 import os
 
 # Add the project root to the path
-sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(__file__))))
 
 from orchestrator.agent_orchestrator import AgentOrchestrator
 from orchestrator.lazy_loader import LazyAgentLoader, AgentConfiguration
