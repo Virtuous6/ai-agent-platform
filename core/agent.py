@@ -177,6 +177,15 @@ class UniversalAgent:
         self.current_prompt_template_id: Optional[str] = None
         self.enable_dynamic_prompts = True  # Feature flag for dynamic prompts
         
+        # Initialize working memory with required keys
+        self._working_memory = {
+            'conversation_flow': [],
+            'learned_approaches': {},
+            'last_task': '',
+            'current_focus': '',
+            'pattern_insights': []
+        }
+        
         # Performance tracking
         self.conversation_history = []
         self.performance_metrics = {

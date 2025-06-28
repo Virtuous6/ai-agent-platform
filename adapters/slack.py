@@ -185,11 +185,15 @@ class SlackBot:
             interaction_data = {
                 "user_id": user_id,
                 "channel_id": channel_id,
-                "message": message,
-                "response": response,
+                "content": message,
+                "agent_response": {"response": response, "platform": "slack"},
                 "processing_time_ms": processing_time_ms,
                 "timestamp": datetime.utcnow().isoformat(),
-                "platform": "slack"
+                "topic": "slack_interaction",
+                "extension": "slack",
+                "message_type": "user_message",
+                "private": False,
+                "agent_type": "general"
             }
             
             self.storage.client.table("messages").insert(interaction_data).execute()

@@ -91,7 +91,7 @@ class DynamicPromptManager:
             
             # Query Supabase for optimal prompt
             result = self.supabase_logger.client.rpc(
-                'get_optimal_prompt',
+                'get_optimal_prompt_template',
                 {
                     'p_agent_type': agent_type,
                     'p_specialty': specialty,
