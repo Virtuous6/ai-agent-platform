@@ -2,6 +2,16 @@
 /.cursor/*
 !/.cursor/rules/
 
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+
+# Virtual environments
 /.env
 /.venv
 /venv
+venv*/
+*venv/

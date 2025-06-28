@@ -93,7 +93,8 @@ class AIAgentMCPServer:
         """Start the MCP server."""
         try:
             logger.info(f"Starting MCP server on {host}:{port}")
-            await self.mcp.run(host=host, port=port)
+            # FastMCP runs on stdio by default, not host/port
+            await self.mcp.run()
         except Exception as e:
             logger.error(f"Failed to start MCP server: {e}")
             raise
@@ -125,6 +126,9 @@ class AIAgentMCPServer:
 
 # Global server instance
 mcp_server = AIAgentMCPServer()
+
+# Expose FastMCP object for mcp dev tool
+mcp = mcp_server.mcp
 
 async def start_mcp_server():
     """Start the MCP server (convenience function)."""
