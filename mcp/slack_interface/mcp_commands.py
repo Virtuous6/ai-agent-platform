@@ -394,40 +394,49 @@ class MCPSlackCommands:
                 return
             
             connection = result.data[0]
+            connection_id = connection.get("id")
             server_url = connection.get("mcp_server_url")
             
-            # Simple connection test - try to reach the URL
-            try:
-                import httpx
-                async with httpx.AsyncClient(timeout=10.0) as client:
-                    response = await client.get(server_url)
-                    is_reachable = response.status_code < 500
-                    test_status = "healthy" if is_reachable else "unhealthy"
-                    
-                # Update health status in database
-                self.db_logger.client.table("mcp_connections").update({
-                    "health_status": test_status,
-                    "last_health_check": "now()"
-                }).eq("id", connection["id"]).execute()
-                
-                status_emoji = "✅" if test_status == "healthy" else "❌"
-                
-                await say({
-                    "text": f"{status_emoji} **Connection test for '{connection_name}'**\n\n🌐 **URL:** `{server_url}`\n📊 **Status:** {test_status}\n🔍 **Response:** {response.status_code if 'response' in locals() else 'No response'}\n\n💡 Connection {'is working!' if test_status == 'healthy' else 'has issues - check the server URL'}",
-                    "response_type": "ephemeral"
-                })
-                
-            except Exception as test_error:
-                # Update health status to unhealthy
-                self.db_logger.client.table("mcp_connections").update({
-                    "health_status": "unhealthy",
-                    "last_health_check": "now()"
-                }).eq("id", connection["id"]).execute()
-                
-                await say({
-                    "text": f"❌ **Connection test failed for '{connection_name}'**\n\n🌐 **URL:** `{server_url}`\n📊 **Status:** unhealthy\n🔍 **Error:** {str(test_error)[:200]}...\n\n💡 Check if the server is running and accessible",
-                    "response_type": "ephemeral"
-                })
+            # Use the connection manager for proper MCP testing
+            # Perform real MCP health check
+            health_result = await self.connection_manager.test_connection_health(connection_id, user_id)
+            
+            # Format results for display
+            status = health_result.get("status", "unknown")
+            status_emoji = "✅" if status == "healthy" else "❌" if status == "unhealthy" else "⚠️"
+            
+            response_text = f"{status_emoji} **Connection test for '{connection_name}'**\n\n"
+            response_text += f"🌐 **URL:** `{server_url}`\n"
+            response_text += f"📊 **Status:** {status}\n"
+            
+            # Add detailed info if available
+            if "response_time_ms" in health_result:
+                response_text += f"⏱️ **Response Time:** {health_result['response_time_ms']}ms\n"
+            
+            if "tools_available" in health_result:
+                response_text += f"🔧 **Tools Available:** {health_result['tools_available']}\n"
+            
+            if "protocol" in health_result:
+                response_text += f"🔌 **Protocol:** {health_result['protocol']}\n"
+            
+            if "transport" in health_result:
+                response_text += f"🚀 **Transport:** {health_result['transport']}\n"
+            
+            if "error" in health_result:
+                response_text += f"🔍 **Error:** {health_result['error'][:200]}\n"
+            
+            # Add guidance message
+            if status == "healthy":
+                response_text += "\n💡 Connection is working! You can now use tools from this connection in chat."
+            elif status == "unhealthy":
+                response_text += "\n💡 Connection has issues. Check credentials with `/mcp credentials` or verify the server is running."
+            else:
+                response_text += "\n💡 Connection status unclear. Try testing again or check the server configuration."
+            
+            await say({
+                "text": response_text,
+                "response_type": "ephemeral"
+            })
             
         except Exception as e:
             logger.error(f"❌ Error testing connection: {str(e)}")
@@ -914,6 +923,10 @@ class MCPSlackCommands:
                     auth_type
                 )
                 
+                # Update health status based on test result
+                health_status = test_result.get("health_status", "unknown")
+                await self._update_connection_health_status(connection["id"], user_id, health_status)
+                
                 if test_result["success"]:
                     await say({
                         "text": f"✅ **Credentials saved and tested successfully!**\n\n🔗 **Connection:** {connection_name}\n🔑 **Auth Type:** {auth_type}\n✅ **Status:** Connection verified\n\n💡 You can now use tools from this connection in chat!",
@@ -956,7 +969,7 @@ class MCPSlackCommands:
                 "credentials_encrypted": credentials_json,
                 "credential_storage_type": "local_env",  # Update when we add proper encryption
                 "status": "active",
-                "health_status": "testing"
+                "health_status": "unknown"  # Use valid constraint value instead of "testing"
             }).eq("id", connection_id).eq("user_id", user_id).execute()
             
             if update_result.data:
@@ -990,17 +1003,35 @@ class MCPSlackCommands:
                 return {
                     "success": True,
                     "tools_discovered": len(session.tools),
-                    "message": "Connection verified successfully"
+                    "message": "Connection verified successfully",
+                    "health_status": "healthy"  # Use valid constraint value
                 }
             else:
                 return {
                     "success": False,
-                    "error": "Failed to establish MCP session"
+                    "error": "Failed to establish MCP session",
+                    "health_status": "unhealthy"  # Use valid constraint value
                 }
                 
         except Exception as e:
             logger.error(f"❌ Credential test failed: {str(e)}")
             return {
                 "success": False,
-                "error": str(e)
-            } 
+                "error": str(e),
+                "health_status": "unhealthy"  # Use valid constraint value
+            }
+    
+    async def _update_connection_health_status(self, connection_id: str, user_id: str, health_status: str):
+        """Update connection health status after testing."""
+        try:
+            update_result = self.db_logger.client.table("mcp_connections").update({
+                "health_status": health_status
+            }).eq("id", connection_id).eq("user_id", user_id).execute()
+            
+            if update_result.data:
+                logger.info(f"✅ Updated connection health status to: {health_status}")
+            else:
+                logger.warning(f"⚠️ Failed to update health status")
+                
+        except Exception as e:
+            logger.error(f"❌ Error updating health status: {str(e)}") 

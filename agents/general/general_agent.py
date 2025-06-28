@@ -498,18 +498,37 @@ Analyze this message for escalation needs:"""
         
         # Check if user has available tools
         available_tools = context.get("mcp_tools_available", [])
+        can_execute = context.get("can_execute_mcp_tools", False)
         
-        return keyword_matches >= 2 and len(available_tools) > 0
+        # Debug logging
+        logger.info(f"🔍 MCP Tool Execution Check:")
+        logger.info(f"   📝 Message: {message[:50]}...")
+        logger.info(f"   🔤 Keywords found: {keyword_matches}")
+        logger.info(f"   🔧 Available tools: {len(available_tools)}")
+        logger.info(f"   ✅ Can execute: {can_execute}")
+        logger.info(f"   🎯 Should execute: {keyword_matches >= 2 and len(available_tools) > 0 and can_execute}")
+        
+        if available_tools:
+            logger.info(f"   📋 Tool list: {[tool.get('name', 'unknown') for tool in available_tools[:3]]}")
+        
+        return keyword_matches >= 2 and len(available_tools) > 0 and can_execute
     
     async def _execute_relevant_mcp_tools(self, message: str, context: Dict[str, Any]) -> Optional[Dict[str, Any]]:
         """Execute relevant MCP tools based on the user's message."""
         try:
+            logger.info(f"🚀 Starting MCP tool execution for message: {message[:50]}...")
+            
             message_lower = message.lower()
             available_tools = context.get("mcp_tools_available", [])
             mcp_executor = context.get("mcp_executor")
             user_id = context.get("user_id")
             
+            logger.info(f"🔧 Available tools: {len(available_tools)}")
+            logger.info(f"🎛️ MCP executor present: {mcp_executor is not None}")
+            logger.info(f"👤 User ID: {user_id}")
+            
             if not available_tools or not mcp_executor:
+                logger.warning("❌ Missing tools or executor - cannot execute MCP tools")
                 return None
             
             # Determine which tool to execute based on message content
@@ -518,40 +537,66 @@ Analyze this message for escalation needs:"""
             
             # Airtable-related requests
             if any(word in message_lower for word in ["airtable", "bases", "tables"]):
-                if any(tool["name"] == "list_bases" for tool in available_tools):
-                    tool_to_execute = "list_bases"
-                elif any(tool["name"] == "get_records" for tool in available_tools):
+                logger.info("🗄️ Detected Airtable request")
+                # Prefer get_records for data requests
+                if "records" in message_lower and any(tool["name"] == "get_records" for tool in available_tools):
                     tool_to_execute = "get_records"
+                    logger.info("📊 Selected tool: get_records (records mentioned)")
                     # Check if user wants limited records
                     if "three" in message_lower or "3" in message_lower:
                         parameters["maxRecords"] = 3
+                        logger.info("🔢 Limited to 3 records")
+                elif any(tool["name"] == "list_bases" for tool in available_tools):
+                    tool_to_execute = "list_bases"
+                    logger.info("📋 Selected tool: list_bases")
+                elif any(tool["name"] == "get_records" for tool in available_tools):
+                    tool_to_execute = "get_records"
+                    logger.info("📊 Selected tool: get_records (fallback)")
             
             # Google Ads related requests
             elif any(word in message_lower for word in ["google ads", "campaigns", "ads", "performance"]):
+                logger.info("📢 Detected Google Ads request")
                 if "campaign" in message_lower and any(tool["name"] == "get_campaigns" for tool in available_tools):
                     tool_to_execute = "get_campaigns"
+                    logger.info("📈 Selected tool: get_campaigns")
                 elif "performance" in message_lower and any(tool["name"] == "get_performance_data" for tool in available_tools):
                     tool_to_execute = "get_performance_data"
+                    logger.info("📊 Selected tool: get_performance_data")
             
-            # General data requests
-            elif any(word in message_lower for word in ["show", "get", "retrieve", "list"]) and "data" in message_lower:
+            # General data requests (show, get records, etc.)
+            elif any(word in message_lower for word in ["show", "get", "retrieve", "list"]) and any(word in message_lower for word in ["data", "records", "information"]):
+                logger.info("📝 Detected general data request")
                 # Try to find the most appropriate tool
                 for tool in available_tools:
                     if tool["name"] in ["get_records", "list_bases", "get_campaigns"]:
                         tool_to_execute = tool["name"]
+                        logger.info(f"🎯 Selected tool: {tool_to_execute}")
+                        # If it's a records request and we have get_records, use it
+                        if "records" in message_lower and tool["name"] == "get_records":
+                            if "three" in message_lower or "3" in message_lower:
+                                parameters["maxRecords"] = 3
+                                logger.info("🔢 Limited to 3 records")
+                            break
+                        # Otherwise take the first matching tool
                         break
             
             if tool_to_execute:
-                logger.info(f"🔧 General Agent executing MCP tool: {tool_to_execute}")
+                logger.info(f"✅ Executing MCP tool: {tool_to_execute} with parameters: {parameters}")
                 result = await mcp_executor["execute_tool"](tool_to_execute, parameters, user_id)
+                logger.info(f"🎉 MCP tool execution completed: {result.get('success', False)}")
                 return {
                     "tool_name": tool_to_execute,
                     "result": result,
                     "parameters": parameters
                 }
+            else:
+                logger.warning(f"❓ No matching tool found for message keywords")
+                logger.info(f"Available tool names: {[tool.get('name') for tool in available_tools]}")
         
         except Exception as e:
-            logger.error(f"Error executing MCP tools: {e}")
+            logger.error(f"💥 Error executing MCP tools: {e}")
+            import traceback
+            traceback.print_exc()
         
         return None
     

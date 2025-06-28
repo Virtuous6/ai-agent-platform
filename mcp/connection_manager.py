@@ -386,7 +386,7 @@ class MCPConnectionManager:
         supported_types = [
             'supabase', 'github', 'slack', 'postgres', 'mongodb', 'redis',
             'notion', 'airtable', 'google_sheets', 'jira', 'linear',
-            'custom_api', 'graphql', 'rest_api'
+            'custom_api', 'graphql', 'rest_api', 'custom'
         ]
         if mcp_type not in supported_types:
             raise ValueError(f"Unsupported MCP type: {mcp_type}")
@@ -443,6 +443,40 @@ class MCPConnectionManager:
                 
                 logger.info("   ✅ PostgreSQL connection validated")
                 
+            elif connection.mcp_type == 'custom':
+                # Use real MCP client for custom connections
+                from mcp.mcp_client import mcp_client
+                
+                server_url = connection.connection_config.get('url')
+                if not server_url:
+                    raise ConnectionError("Custom MCP server URL required")
+                
+                logger.info(f"   🔗 Testing custom MCP server: {server_url}")
+                
+                # Get credentials if available (they might be stored separately)
+                credentials = None
+                if connection.credential_reference:
+                    try:
+                        # Try to parse stored credentials
+                        import json
+                        creds_data = json.loads(connection.credential_reference)
+                        credentials = {
+                            'api_key': creds_data.get('api_key'),
+                            'auth_type': creds_data.get('auth_type', 'Bearer')
+                        }
+                    except:
+                        logger.info("   ⚠️ No valid credentials found, testing without authentication")
+                
+                # Test the connection using real MCP client
+                session = await mcp_client.connect_to_mcp_server(server_url, credentials)
+                
+                if session:
+                    logger.info(f"   ✅ MCP connection validated: {len(session.tools)} tools discovered")
+                    # Clean up the test session
+                    await mcp_client.close_session(session.session_id)
+                else:
+                    raise ConnectionError("Failed to establish MCP session")
+                
             else:
                 # Generic connection test for other types
                 logger.info(f"   ✅ {connection.mcp_type} connection validated (generic)")
@@ -490,22 +524,103 @@ class MCPConnectionManager:
     
     async def _perform_health_check(self, connection: MCPConnection) -> Dict[str, Any]:
         """Perform connection-specific health check."""
-        # Implement health checks based on connection type
-        return {
-            "status": "healthy",
-            "timestamp": datetime.utcnow().isoformat(),
-            "response_time_ms": 50,
-            "tools_available": len(connection.tools_available)
-        }
+        try:
+            start_time = datetime.utcnow()
+            
+            if connection.mcp_type == 'custom':
+                # Use real MCP client for custom connection health checks
+                from mcp.mcp_client import mcp_client
+                
+                server_url = connection.connection_config.get('url')
+                if not server_url:
+                    return {
+                        "status": "unhealthy",
+                        "timestamp": start_time.isoformat(),
+                        "error": "No server URL configured",
+                        "tools_available": 0
+                    }
+                
+                # Get credentials if available
+                credentials = None
+                if connection.credential_reference:
+                    try:
+                        import json
+                        creds_data = json.loads(connection.credential_reference)
+                        credentials = {
+                            'api_key': creds_data.get('api_key'),
+                            'auth_type': creds_data.get('auth_type', 'Bearer')
+                        }
+                    except:
+                        pass  # No credentials available
+                
+                # Test the connection
+                session = await mcp_client.connect_to_mcp_server(server_url, credentials)
+                
+                if session:
+                    tools_count = len(session.tools)
+                    # Clean up the test session
+                    await mcp_client.close_session(session.session_id)
+                    
+                    end_time = datetime.utcnow()
+                    response_time_ms = int((end_time - start_time).total_seconds() * 1000)
+                    
+                    return {
+                        "status": "healthy",
+                        "timestamp": end_time.isoformat(),
+                        "response_time_ms": response_time_ms,
+                        "tools_available": tools_count,
+                        "protocol": session.capabilities.get('protocol', 'unknown'),
+                        "transport": session.capabilities.get('transport', 'unknown')
+                    }
+                else:
+                    return {
+                        "status": "unhealthy",
+                        "timestamp": datetime.utcnow().isoformat(),
+                        "error": "Failed to establish MCP session",
+                        "tools_available": 0
+                    }
+            else:
+                # Generic health check for other connection types
+                return {
+                    "status": "healthy",
+                    "timestamp": datetime.utcnow().isoformat(),
+                    "response_time_ms": 50,
+                    "tools_available": len(connection.tools_available)
+                }
+                
+        except Exception as e:
+            return {
+                "status": "unhealthy",
+                "timestamp": datetime.utcnow().isoformat(),
+                "error": str(e),
+                "tools_available": 0
+            }
     
     async def _update_connection_health(self, connection_id: str, health_result: Dict[str, Any]):
         """Update connection health status in database."""
-        query = """
-            UPDATE mcp_connections 
-            SET last_health_check = NOW(), health_status = %s
-            WHERE id = %s
-        """
-        await self.db_logger.execute_query(query, [health_result, connection_id])
+        try:
+            # Map health result status to database-compatible values
+            status_mapping = {
+                "healthy": "healthy",
+                "unhealthy": "unhealthy",
+                "error": "unhealthy",
+                "timeout": "timeout"
+            }
+            
+            db_health_status = status_mapping.get(health_result.get("status", "unknown"), "unknown")
+            
+            # Use Supabase client directly with the correct schema
+            update_result = self.db_logger.client.table("mcp_connections").update({
+                "health_status": db_health_status
+            }).eq("id", connection_id).execute()
+            
+            if update_result.data:
+                logger.info(f"✅ Updated health status to: {db_health_status}")
+            else:
+                logger.warning(f"⚠️ Failed to update health status for connection {connection_id}")
+                
+        except Exception as e:
+            logger.error(f"❌ Error updating health status: {str(e)}")
     
     async def _log_security_event(self, user_id: str, event_type: str,
                                 event_description: str, connection_id: Optional[str] = None,
