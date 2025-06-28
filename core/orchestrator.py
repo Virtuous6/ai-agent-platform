@@ -190,8 +190,7 @@ class Orchestrator:
             max_tokens=config.get("max_tokens", 500),
             agent_id=agent_key,
             supabase_logger=self.storage,
-            event_bus=self.event_bus,
-            enable_dynamic_prompts=True  # ✅ Enable dynamic prompts
+            event_bus=self.event_bus
         )
         
         # Store the custom prompt data for this agent

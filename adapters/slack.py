@@ -192,7 +192,7 @@ class SlackBot:
                 "platform": "slack"
             }
             
-            self.storage.client.table("interactions").insert(interaction_data).execute()
+            self.storage.client.table("messages").insert(interaction_data).execute()
             
         except Exception as e:
             logger.error(f"Failed to log interaction: {e}")
