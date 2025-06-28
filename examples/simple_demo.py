@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Simple Demo: smolagents-inspired agent with universal tools
+Simple Demo: Universal Tools Agent
 Shows how we implemented the key features:
 - Universal tools (web search, calculate, etc.) available to all agents
 - Code-first execution 
@@ -16,13 +16,13 @@ sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from core.simple_agent import SimpleCodeAgent, HybridAgent
 
 async def main():
-    print("🔥 smolagents-inspired Simple Agent Demo")
+    print("🔥 Universal Tools Simple Agent Demo")
     print("=" * 60)
     
     print("✅ IMPLEMENTED FEATURES:")
     print("  • Universal tools (web_search, calculate, etc.)")
     print("  • @tool decorator pattern")  
-    print("  • Code-first execution like smolagents")
+    print("  • Code-first execution")
     print("  • Simple interface - just agent.run(message)")
     print("  • Platform integration for learning")
     print()
@@ -53,10 +53,10 @@ async def main():
     print(f"\n📊 AGENT TOOLS:")
     print(f"   Available: {agent.list_tools()}")
     
-    print(f"\n🎯 SUCCESS: smolagents patterns implemented!")
+    print(f"\n🎯 SUCCESS: Universal tool patterns implemented!")
     print(f"   • Tools work universally across all agents")
     print(f"   • Code-first execution reduces LLM calls")
-    print(f"   • Simple interface like smolagents.run()")
+    print(f"   • Simple interface with agent.run()")
     print(f"   • Ready for platform integration")
 
 if __name__ == "__main__":

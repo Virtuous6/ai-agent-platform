@@ -27,7 +27,7 @@ class SimpleCodeAgent:
     
     Philosophy:
     - Universal tools available by default (web_search, calculate, etc.)
-    - Code-first execution like smolagents
+    - Code-first execution
     - Simple interface, powerful capabilities
     - Zero complex dependencies
     """
@@ -114,7 +114,7 @@ User: {{message}}
     async def run(self, message: str, context: Dict[str, Any] = None) -> Dict[str, Any]:
         """
         Run the agent with a message.
-        Simple interface like smolagents.
+        Simple interface for universal tool access.
         """
         run_id = str(uuid.uuid4())
         start_time = time.time()
@@ -282,7 +282,7 @@ class HybridAgent(SimpleCodeAgent):
     Hybrid agent that combines SimpleCodeAgent with platform features.
     
     Best of both worlds:
-    - smolagents-style simplicity for tool execution  
+    - Simple tool execution interface
     - Platform learning and improvement capabilities
     """
     

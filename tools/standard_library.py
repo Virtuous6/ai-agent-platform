@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 Standard Tools Library
-Universal capabilities available to all agents - inspired by smolagents simplicity.
+Universal capabilities available to all agents with simple interface.
 """
 
 import requests
@@ -12,7 +12,7 @@ from functools import wraps
 
 def tool(func):
     """
-    Simple @tool decorator like smolagents.
+    Simple @tool decorator for universal tools.
     Marks functions as agent tools with automatic discovery.
     """
     func._is_tool = True
@@ -21,7 +21,7 @@ def tool(func):
     return func
 
 # =============================================================================
-# 🌐 WEB CAPABILITIES - Universal like smolagents
+# 🌐 WEB CAPABILITIES - Universal access
 # =============================================================================
 
 @tool
@@ -252,7 +252,7 @@ def execute_tool(tool_name: str, **kwargs) -> Dict[str, Any]:
 class StandardAgent:
     """
     Simple agent with universal tool capabilities.
-    Inspired by smolagents simplicity.
+    Features simple interface for tool execution.
     """
     
     def __init__(self, agent_id: str = "standard_agent"):

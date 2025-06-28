@@ -1,8 +1,8 @@
 """
-MCP (Model Context Protocol) Integration Package
+MCP (Model Context Protocol) integration package.
 
-Enables dynamic connection to external tools, databases, and services
-through a secure, user-managed interface integrated with the AI Agent Platform.
+Provides tools, security, and universal access patterns for MCP tools
+in the self-improving AI agent platform.
 
 Core Components:
 - Connection Manager: Handles MCP service connections
@@ -20,42 +20,40 @@ Integration Points:
 - Memory System: Tool results stored in vector memory
 """
 
-from .connection_manager import MCPConnectionManager
-from .credential_store import CredentialManager
-from .tool_registry import MCPToolRegistry
+# Import core modules that we've created
+from .tool_registry import MCPToolRegistry, ToolDescriptor
 from .security_sandbox import MCPSecuritySandbox
 
-# Run cards for quick setup
-from .run_cards.supabase_card import SupabaseRunCard
-from .run_cards.github_card import GitHubRunCard
-from .run_cards.slack_card import SlackRunCard
-from .run_cards.custom_card import CustomRunCard
-
-# Slack interface for user management
-from .slack_interface.mcp_commands import MCPSlackCommands
-from .slack_interface.connection_modal import MCPConnectionModal
-from .slack_interface.tool_browser import MCPToolBrowser
-
-__version__ = "1.0.0"
+# Import universal tools
+try:
+    from .universal_mcp_tools import (
+        UniversalMCPTools, 
+        universal_mcp_tools,
+        get_universal_tools,
+        execute_universal_tool,
+        list_universal_tools
+    )
+    HAS_UNIVERSAL_TOOLS = True
+except ImportError:
+    HAS_UNIVERSAL_TOOLS = False
 
 __all__ = [
-    # Core components
-    'MCPConnectionManager',
-    'CredentialManager', 
+    # Core MCP components
     'MCPToolRegistry',
+    'ToolDescriptor', 
     'MCPSecuritySandbox',
-    
-    # Run cards
-    'SupabaseRunCard',
-    'GitHubRunCard', 
-    'SlackRunCard',
-    'CustomRunCard',
-    
-    # Slack interface
-    'MCPSlackCommands',
-    'MCPConnectionModal',
-    'MCPToolBrowser'
+    'HAS_UNIVERSAL_TOOLS'
 ]
+
+# Add universal tools to __all__ if available
+if HAS_UNIVERSAL_TOOLS:
+    __all__.extend([
+        'UniversalMCPTools',
+        'universal_mcp_tools', 
+        'get_universal_tools',
+        'execute_universal_tool',
+        'list_universal_tools'
+    ])
 
 # Configuration constants
 MCP_CONFIG = {
