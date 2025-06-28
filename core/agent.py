@@ -12,6 +12,7 @@ import logging
 import os
 import json
 import uuid
+import time
 from typing import Dict, Any, Optional, List, Tuple
 from datetime import datetime, timezone
 from enum import Enum
@@ -28,9 +29,8 @@ from evolution.memory import VectorMemoryStore
 from core.events import EventBus, EventType
 from evolution.tracker import WorkflowTracker
 
-# MCP integrations (will be imported conditionally to avoid circular imports)
-# from mcp.mcp_discovery_engine import MCPDiscoveryEngine
-# from mcp.dynamic_tool_builder import DynamicToolBuilder
+# MCP integrations using official SDK
+# from mcp import mcp_registry, find_mcp_tools
 
 logger = logging.getLogger(__name__)
 
@@ -78,10 +78,8 @@ class UniversalAgent:
                  vector_store: Optional[VectorMemoryStore] = None,
                  event_bus: Optional[EventBus] = None,
                  workflow_tracker: Optional[WorkflowTracker] = None,
-                 # MCP integrations
-                 mcp_discovery_engine = None,
-                 dynamic_tool_builder = None,
-                 mcp_tool_registry = None):
+                 # MCP integrations (official SDK)
+                 mcp_registry = None):
         """
         Initialize the Universal Agent with platform integrations.
         
@@ -100,10 +98,8 @@ class UniversalAgent:
             event_bus: Event-driven communication
             workflow_tracker: Workflow analysis integration
             
-            # MCP integrations (Model Context Protocol)
-            mcp_discovery_engine: Engine to find MCP solutions for missing capabilities
-            dynamic_tool_builder: Builder for creating new tools when MCPs aren't available
-            mcp_tool_registry: Registry of available MCP tools
+            # MCP integrations (Model Context Protocol) - Official SDK
+            mcp_registry: Official MCP registry for tool discovery and execution
         """
         
         # Core configuration
@@ -138,14 +134,26 @@ class UniversalAgent:
         self.workflow_tracker = workflow_tracker
         self.tool_registry = {}  # For tools registry integration
         
-        # MCP integrations for tool discovery and building
-        self.mcp_discovery_engine = mcp_discovery_engine
-        self.dynamic_tool_builder = dynamic_tool_builder
-        self.mcp_tool_registry = mcp_tool_registry
+        # MCP integration using official SDK
+        self.mcp_registry = mcp_registry
         
-        # Track MCP tool requests and gaps
-        self.mcp_tool_requests: Dict[str, str] = {}  # gap_id -> request_id
-        self.pending_mcp_tasks: List[Dict[str, Any]] = []
+        # Track MCP tool usage
+        self.mcp_tool_usage: Dict[str, int] = {}  # tool_name -> usage_count
+        self.last_mcp_sync: Optional[datetime] = None
+        
+        # Tool execution improvements
+        self.tool_cache = {}  # Cache for tool results
+        self.cache_ttl = 3600  # 1 hour cache TTL
+        
+        # Context persistence for tools
+        self.conversation_context = {
+            'tool_results_history': [],  # All previous tool results
+            'user_preferences': {},      # Learned user preferences
+            'session_data': {},          # Current session context
+            'previous_queries': [],      # Recent queries for context
+            'successful_patterns': [],   # Patterns that worked well
+            'failed_patterns': []        # Patterns that failed (to avoid)
+        }
         
         # Token management and cost optimization
         self.token_management = {
@@ -205,7 +213,7 @@ class UniversalAgent:
         if self.event_bus:
             asyncio.create_task(self._register_event_handlers())
         
-        mcp_status = "with MCP-first tool discovery" if self.mcp_discovery_engine else "without MCP integration"
+        mcp_status = "with official MCP SDK" if self.mcp_registry else "without MCP integration"
         logger.info(f"Universal Agent '{self.specialty}' initialized with full platform integration {mcp_status}")
     
     def _create_main_prompt(self) -> ChatPromptTemplate:
@@ -401,7 +409,7 @@ Provide improvement analysis for the {self.specialty} specialist:"""
     
     async def process_message(self, message: str, context: Dict[str, Any]) -> Dict[str, Any]:
         """
-        Process a user message with full platform integration.
+        Process a user message with layered approach: simple → direct, complex → specialist.
         
         Args:
             message: User message content
@@ -419,280 +427,20 @@ Provide improvement analysis for the {self.specialty} specialist:"""
             
             logger.info(f"Universal Agent '{self.specialty}' processing: '{message[:50]}...'")
             
-            # 🚀 STEP 1: Assess complexity and load dynamic prompt
-            complexity_level = await self._assess_message_complexity(message, context)
-            context['complexity_level'] = complexity_level  # Ensure it's available
+            # 🚀 STEP 1: Detect intent and complexity
+            intent = await self._detect_intent(message, context)
+            context['intent'] = intent
             
-            # 🎯 STEP 2: Always try to load dynamic prompt (with fallback)
-            if self.enable_dynamic_prompts:
-                try:
-                    self.main_prompt = await self._create_dynamic_prompt(complexity_level)
-                    logger.info(f"🎯 Using dynamic prompt for {complexity_level} complexity")
-                except Exception as e:
-                    logger.warning(f"Failed to load dynamic prompt, using static: {e}")
-            
-            # Calculate dynamic context budget if optimization enabled
-            if self.token_management['enable_token_optimization']:
-                context_budget = self._calculate_context_budget(message)
-                logger.debug(f"Context budget: {sum(context_budget.values())} tokens allocated")
-                
-                # Update token management limits dynamically
-                self.token_management['max_memory_tokens'] = context_budget['memory_context']
-                self.token_management['max_working_memory_tokens'] = context_budget['working_memory']
-                self.token_management['max_history_tokens'] = context_budget['history']
-                self.token_management['max_tool_results_tokens'] = context_budget['tool_results']
-            
-            # Start workflow tracking
-            if self.workflow_tracker:
-                await self.workflow_tracker.start_workflow(run_id, {
-                    "agent_id": self.agent_id,
-                    "specialty": self.specialty,
-                    "message_preview": message[:100],
-                    "complexity_level": complexity_level,
-                    "token_optimization": self.token_management['enable_token_optimization']
-                })
-            
-            # Retrieve relevant memory context
-            memory_context = await self._get_memory_context(message, context)
-            
-            # Prepare conversation history context
-            history_context = self._format_conversation_history(context.get("conversation_history", []))
-            
-            # Execute tools if available
-            tool_results = await self._execute_tools(message, context)
-            
-            # Generate specialist response with optional adaptive processing
-            if self.adaptive_mode:
-                try:
-                    # Use adaptive processing for better performance
-                    adaptive_result = await self.adapt_to_task(message, context)
-                    response = adaptive_result.get('response', '')
-                    tokens_used = adaptive_result.get('tokens_used', 0)
-                    input_tokens = 0  # Would need to extract from adaptive result
-                    output_tokens = 0  # Would need to extract from adaptive result
-                    cost = adaptive_result.get('cost', 0.0)
-                    adaptive_metadata = {
-                        'adaptation_used': adaptive_result.get('adaptation_used', False),
-                        'optimal_params': adaptive_result.get('optimal_params', {}),
-                        'task_analysis': adaptive_result.get('task_analysis', {}),
-                        'quality_score': adaptive_result.get('quality_score', 0.0)
-                    }
-                except Exception as e:
-                    logger.warning(f"Adaptive processing failed, falling back to standard: {e}")
-                    # Fallback to standard processing
-                    try:
-                        with get_openai_callback() as cb:
-                            response = await self._generate_specialist_response(
-                                message, context, history_context, memory_context, tool_results
-                            )
-                        tokens_used = cb.total_tokens
-                        input_tokens = cb.prompt_tokens
-                        output_tokens = cb.completion_tokens
-                        cost = cb.total_cost
-                        adaptive_metadata = {'adaptation_used': False, 'fallback_reason': str(e)}
-                    except Exception as e2:
-                        logger.warning(f"OpenAI callback failed: {e2}")
-                        response = await self._generate_specialist_response(
-                            message, context, history_context, memory_context, tool_results
-                        )
-                        tokens_used = 0
-                        input_tokens = 0
-                        output_tokens = 0
-                        cost = 0.0
-                        adaptive_metadata = {'adaptation_used': False, 'fallback_reason': str(e)}
+            # 🎯 STEP 2: Route based on complexity
+            if intent['complexity'] == 'simple':
+                logger.info(f"✅ Simple intent detected: {intent['type']} - handling directly")
+                return await self._handle_simple_intent(message, context, intent, run_id, start_time)
             else:
-                # Standard processing without adaptation
-                try:
-                    with get_openai_callback() as cb:
-                        response = await self._generate_specialist_response(
-                            message, context, history_context, memory_context, tool_results
-                        )
-                    tokens_used = cb.total_tokens
-                    input_tokens = cb.prompt_tokens
-                    output_tokens = cb.completion_tokens
-                    cost = cb.total_cost
-                    adaptive_metadata = {'adaptation_used': False}
-                except Exception as e:
-                    logger.warning(f"OpenAI callback failed, proceeding without tracking: {e}")
-                    response = await self._generate_specialist_response(
-                        message, context, history_context, memory_context, tool_results
-                    )
-                    tokens_used = 0
-                    input_tokens = 0
-                    output_tokens = 0
-                    cost = 0.0
-                    adaptive_metadata = {'adaptation_used': False}
-            
-            # Calculate processing time
-            processing_time_ms = (datetime.utcnow() - start_time).total_seconds() * 1000
-            
-            # 📊 STEP 3: Log prompt performance for learning
-            if self.enable_dynamic_prompts and self.current_prompt_template_id:
-                await self._log_prompt_performance(
-                    message, response, context, cost, processing_time_ms
-                )
-            
-            # Token usage monitoring and alerting
-            if self.token_management['enable_token_optimization']:
-                context_size = len(memory_context + history_context) // 4
-                total_context_tokens = context_size + tokens_used
-                
-                # Log detailed token breakdown
-                logger.info(f"Token usage breakdown for {self.specialty}:")
-                logger.info(f"  Input tokens: {input_tokens}")
-                logger.info(f"  Output tokens: {output_tokens}")
-                logger.info(f"  Memory context: ~{len(memory_context) // 4} tokens")
-                logger.info(f"  History context: ~{len(history_context) // 4} tokens")
-                logger.info(f"  Total tokens: {tokens_used}")
-                logger.info(f"  Cost: ${cost:.4f}")
-                
-                # Alert on high usage
-                context_window = self.context_windows.get(self.model_name, 4096)
-                if tokens_used > context_window * 0.8:
-                    logger.warning(f"🚨 HIGH TOKEN USAGE: {tokens_used}/{context_window} tokens ({tokens_used/context_window:.1%})")
-                    logger.warning(f"   Consider enabling more aggressive optimization for {self.specialty}")
-                
-                # Alert on high cost
-                cost_threshold = 0.01  # $0.01 per request
-                if cost > cost_threshold:
-                    logger.warning(f"💰 HIGH COST ALERT: ${cost:.4f} for single request")
-                
-                # Update performance metrics with cost efficiency
-                cost_per_token = cost / max(1, tokens_used)
-                if hasattr(self, 'cost_efficiency_history'):
-                    self.cost_efficiency_history.append(cost_per_token)
-                else:
-                    self.cost_efficiency_history = [cost_per_token]
-                
-                # Keep only recent cost history
-                self.cost_efficiency_history = self.cost_efficiency_history[-10:]
-            
-            # Log to Supabase
-            conversation_id = context.get("conversation_id")
-            if not conversation_id:
-                logger.warning(f"🚨 Agent {self.agent_id} received NO conversation_id in context from user {context.get('user_id', 'unknown')}")
-                logger.debug(f"Context keys available: {list(context.keys())}")
-                logger.warning(f"🚨 SKIPPING Supabase logging and memory storage - no conversation_id provided")
-                # Don't log or store memory without conversation_id to prevent false warnings
-                message_id = ""
-            else:
-                logger.debug(f"✅ Agent {self.agent_id} using conversation_id: {conversation_id}")
-                
-                message_id = await self._log_to_supabase(
-                    conversation_id, message, response, context, 
-                    tokens_used, input_tokens, output_tokens, cost, processing_time_ms
-                )
-                
-                # Store in memory only when we have a valid conversation_id
-                await self._store_memory(conversation_id, message_id, message, response, context)
-            
-            # Publish events
-            await self._publish_events(run_id, message, response, context, processing_time_ms)
-            
-            # Update performance metrics
-            self._update_performance_metrics(tokens_used, cost, processing_time_ms, True)
-            
-            # Complete workflow tracking
-            if self.workflow_tracker:
-                await self.workflow_tracker.complete_workflow(run_id, {
-                    "success": True,
-                    "response_length": len(response),
-                    "tokens_used": tokens_used,
-                    "cost": cost,
-                    "complexity_level": complexity_level,
-                    "dynamic_prompt_used": self.enable_dynamic_prompts and self.current_prompt_template_id is not None,
-                    "adaptive_params": adaptive_metadata,
-                    "task_analysis": adaptive_metadata.get('task_analysis') if 'adaptive_metadata' in locals() else None,
-                    "quality_score": adaptive_metadata.get('quality_score') if 'adaptive_metadata' in locals() else None
-                })
-            
-            # Log the interaction
-            interaction_log = {
-                "run_id": run_id,
-                "timestamp": start_time.isoformat(),
-                "message_preview": message[:100],
-                "specialty": self.specialty,
-                "user_id": context.get("user_id"),
-                "channel_id": context.get("channel_id"),
-                "conversation_id": conversation_id,
-                "message_id": message_id,
-                "tokens_used": tokens_used,
-                "input_tokens": input_tokens,
-                "output_tokens": output_tokens,
-                "cost": cost,
-                "processing_time_ms": processing_time_ms,
-                "tool_results": tool_results,
-                "memory_context_used": bool(memory_context)
-            }
-            self.conversation_history.append(interaction_log)
-            
-            # Check for MCP tool gaps if confidence is low
-            confidence = 0.9  # Default confidence
-            mcp_gap_detected = False
-            mcp_request_info = {}
-            
-            # MCP-FIRST APPROACH: Check for tool gaps when confidence is low
-            if confidence < 0.7 and self.dynamic_tool_builder:
-                logger.info(f"🔍 Low confidence ({confidence:.2f}) - checking for MCP tool gaps...")
-                
-                mcp_gap = await self._detect_mcp_tool_gap(message, response, context, confidence)
-                if mcp_gap:
-                    mcp_gap_detected = True
-                    mcp_request_info = await self._handle_mcp_tool_gap(mcp_gap, message, context)
-                    
-                    # Update response to inform user about MCP tool request
-                    if mcp_request_info.get('mcp_solutions_found', 0) > 0:
-                        response = mcp_request_info.get('enhanced_response', response)
-                        confidence = 0.8  # Higher confidence when we have MCP solutions
-                    else:
-                        response = mcp_request_info.get('tool_building_response', response)
-                        confidence = 0.6  # Moderate confidence for custom tool building
-            
-            # Save working memory for next interaction
-            await self.save_working_memory()
-            
-            # Log prompt performance if using dynamic prompts
-            await self._log_prompt_performance(message, response, context, cost, processing_time_ms)
-            
-            return {
-                "response": response,
-                "agent_id": self.agent_id,
-                "specialty": self.specialty,
-                "conversation_type": "specialist",
-                "confidence": confidence,
-                "tokens_used": tokens_used,
-                "input_tokens": input_tokens,
-                "output_tokens": output_tokens,
-                "processing_cost": cost,
-                "processing_time_ms": processing_time_ms,
-                "tool_results": tool_results,
-                "conversation_id": conversation_id,
-                "message_id": message_id,
-                "run_id": run_id,
-                "memory_context_used": bool(memory_context),
-                "events_published": ["agent_task_completed"],
-                "metadata": {
-                    "model_used": self.llm.model_name,
-                    "temperature": self.llm.temperature,
-                    "agent_id": self.agent_id,
-                    "specialty": self.specialty,
-                    "tools_used": [tool.name for tool in self.tools if tool.enabled],
-                    "performance_score": self.performance_metrics.get("average_quality_score", 0.0),
-                    "platform_integrated": True,
-                    "adaptive_processing": adaptive_metadata,
-                    "mcp_integration": {
-                        "mcp_discovery_available": bool(self.mcp_discovery_engine),
-                        "tool_builder_available": bool(self.dynamic_tool_builder),
-                        "gap_detected": mcp_gap_detected,
-                        "pending_mcp_tasks": len(self.pending_mcp_tasks),
-                        "mcp_request_info": mcp_request_info
-                    },
-                    "prompt_template_id": getattr(self, 'current_prompt_template_id', None)
-                }
-            }
+                logger.info(f"🔄 Complex intent detected: {intent['type']} - spawning specialist")
+                return await self._spawn_specialist_for_complex_task(message, context, intent, run_id, start_time)
             
         except Exception as e:
-            logger.error(f"Error processing message in Universal Agent '{self.specialty}': {str(e)}")
+            logger.error(f"Error in Universal Agent '{self.specialty}' message processing: {str(e)}")
             
             # Update performance metrics for failure
             processing_time_ms = (datetime.utcnow() - start_time).total_seconds() * 1000
@@ -706,15 +454,8 @@ Provide improvement analysis for the {self.specialty} specialist:"""
                     source=self.agent_id
                 )
             
-            # Complete workflow tracking with failure
-            if self.workflow_tracker:
-                await self.workflow_tracker.complete_workflow(run_id, {
-                    "success": False,
-                    "error": str(e)
-                })
-            
             return {
-                "response": f"I apologize, but I'm having trouble processing your {self.specialty} request right now. Please try again or contact support if this continues.",
+                "response": f"I apologize, but I encountered an error processing your request. Please try rephrasing or try again.",
                 "agent_id": self.agent_id,
                 "specialty": self.specialty,
                 "conversation_type": "error",
@@ -723,204 +464,95 @@ Provide improvement analysis for the {self.specialty} specialist:"""
                 "tokens_used": 0,
                 "processing_time_ms": processing_time_ms,
                 "run_id": run_id,
-                "platform_integrated": True
+                "routing": "error"
             }
     
-    async def _detect_mcp_tool_gap(self, message: str, response: str, 
-                                 context: Dict[str, Any], confidence: float) -> Optional[Any]:
+    async def _find_mcp_tools_for_capability(self, capability: str) -> List[Dict[str, Any]]:
         """
-        Detect if the agent needs an MCP tool it doesn't have.
+        Find MCP tools that provide a specific capability using the official SDK.
         
-        MCP-FIRST APPROACH: Prioritizes finding MCP solutions before building custom tools.
-        
-        Returns ToolGap object if gap detected, None otherwise.
+        Args:
+            capability: Description of needed capability
+            
+        Returns:
+            List of matching MCP tools
         """
-        if confidence >= 0.7:  # Good confidence, no gap
-            return None
-        
         try:
-            # Check if we have MCP tool builder
-            if not self.dynamic_tool_builder:
-                return None
+            if not self.mcp_registry:
+                return []
             
-            # Use dynamic tool builder to detect gap (it has MCP-first logic)
-            gap = await self.dynamic_tool_builder.detect_tool_gap(
-                agent_id=self.agent_id,
-                message=message,
-                context={
-                    **context,
-                    "low_confidence_response": response,
-                    "confidence_score": confidence,
-                    "agent_specialty": self.specialty,
-                    "detection_source": "universal_agent"
-                }
-            )
+            # Use official MCP registry to find tools
+            from mcp import find_mcp_tools
+            tools = await find_mcp_tools(capability)
             
-            if gap:
-                logger.info(f"🔍 MCP tool gap detected by {self.specialty}: {gap.capability_needed}")
-                if gap.mcp_solutions:
-                    logger.info(f"📦 Found {len(gap.mcp_solutions)} potential MCP solutions")
-                    for i, mcp in enumerate(gap.mcp_solutions[:3]):
-                        logger.info(f"   {i+1}. {mcp.capability.name} ({mcp.match_type}, score: {mcp.match_score:.2f})")
-                else:
-                    logger.info(f"🔧 No MCP solutions found - will attempt custom tool creation")
-            
-            return gap
+            logger.info(f"🔍 Found {len(tools)} MCP tools for capability: {capability}")
+            return tools
             
         except Exception as e:
-            logger.error(f"Error detecting MCP tool gap: {e}")
-            return None
+            logger.error(f"Error finding MCP tools for capability '{capability}': {e}")
+            return []
     
-    async def _handle_mcp_tool_gap(self, mcp_gap, message: str, context: Dict[str, Any]) -> Dict[str, Any]:
+    async def _use_mcp_tool(self, capability: str, message: str, context: Dict[str, Any]) -> Dict[str, Any]:
         """
-        Handle a detected MCP tool gap by requesting tool creation.
+        Use an MCP tool to handle a capability need.
         
-        Returns information about the MCP tool request.
+        Args:
+            capability: The capability needed
+            message: User message
+            context: Request context
+            
+        Returns:
+            Result from MCP tool execution
         """
         try:
-            user_id = context.get('user_id', 'unknown')
+            # Find suitable MCP tools
+            tools = await self._find_mcp_tools_for_capability(capability)
             
-            # Check if we already have a pending request for this capability
-            existing_request = self._find_existing_mcp_request(mcp_gap.capability_needed)
-            if existing_request:
-                return await self._check_mcp_request_status(existing_request, message, context)
-            
-            # Request tool creation (will use MCP-first approach)
-            request_id = await self.dynamic_tool_builder.request_tool_creation(
-                gap=mcp_gap, 
-                user_id=user_id
-            )
-            
-            # Track the request
-            self.mcp_tool_requests[mcp_gap.gap_id] = request_id
-            
-            # Store the pending task for later completion
-            self.pending_mcp_tasks.append({
-                'message': message,
-                'context': context,
-                'gap_id': mcp_gap.gap_id,
-                'request_id': request_id,
-                'created_at': datetime.utcnow(),
-                'mcp_solutions_count': len(mcp_gap.mcp_solutions) if mcp_gap.mcp_solutions else 0
-            })
-            
-            # Generate enhanced response based on available solutions
-            if mcp_gap.mcp_solutions:
-                enhanced_response = await self._generate_mcp_solution_response(mcp_gap, request_id)
+            if not tools:
                 return {
-                    'mcp_solutions_found': len(mcp_gap.mcp_solutions),
-                    'enhanced_response': enhanced_response,
-                    'request_id': request_id,
-                    'best_solution': mcp_gap.mcp_solutions[0].capability.name
+                    'mcp_tools_found': 0,
+                    'message': f"No MCP tools found for capability: {capability}"
+                }
+            
+            # Use the best tool (first in list, sorted by usage)
+            best_tool = tools[0]
+            tool_key = f"{best_tool['server']}:{best_tool['name']}"
+            
+            logger.info(f"🔧 Using MCP tool: {tool_key}")
+            
+            # Prepare arguments (simplified)
+            arguments = {
+                "query": message,
+                "context": capability
+            }
+            
+            # Execute the tool via official MCP registry
+            if self.mcp_registry:
+                result = await self.mcp_registry.call_tool(tool_key, arguments)
+                
+                # Track usage
+                self.mcp_tool_usage[tool_key] = self.mcp_tool_usage.get(tool_key, 0) + 1
+                
+                return {
+                    'mcp_tools_found': len(tools),
+                    'tool_used': tool_key,
+                    'result': result,
+                    'success': True
                 }
             else:
-                tool_building_response = await self._generate_tool_building_response(mcp_gap, request_id)
                 return {
-                    'mcp_solutions_found': 0,
-                    'tool_building_response': tool_building_response,
-                    'request_id': request_id,
-                    'custom_tool_needed': True
+                    'mcp_tools_found': len(tools),
+                    'error': 'MCP registry not available'
                 }
                 
         except Exception as e:
-            logger.error(f"Error handling MCP tool gap: {e}")
+            logger.error(f"Error using MCP tool for capability '{capability}': {e}")
             return {
-                'error': str(e),
-                'mcp_solutions_found': 0
+                'mcp_tools_found': 0,
+                'error': str(e)
             }
     
-    async def _generate_mcp_solution_response(self, mcp_gap, request_id: str) -> str:
-        """Generate response when MCP solutions are available."""
-        best_mcp = mcp_gap.mcp_solutions[0]
-        
-        response = f"""I found a way to help you! 🚀
 
-**What you need:** {mcp_gap.capability_needed}
-**Solution:** I can use the **{best_mcp.capability.name}** MCP
-
-📦 **Available MCP Solutions:**"""
-        
-        for i, mcp in enumerate(mcp_gap.mcp_solutions[:3]):
-            match_emoji = "✅" if mcp.match_type == "exact_existing" else "🔌" if mcp.match_type == "exact" else "🔗"
-            response += f"\n{i+1}. {match_emoji} **{mcp.capability.name}** ({mcp.match_score:.0%} match)"
-            response += f"\n   {mcp.capability.description}"
-        
-        if best_mcp.match_type == "exact_existing":
-            response += f"\n\n✅ **Great news!** The {best_mcp.capability.name} is already connected. Let me set this up for you..."
-        else:
-            response += f"\n\n🔌 **Setup needed:** I'll help you connect to {best_mcp.capability.name}. You may need to provide some credentials."
-        
-        response += f"\n\n**Request ID:** `{request_id}`\nI'll handle the technical details - you focus on your task! 🎯"
-        
-        return response
-    
-    async def _generate_tool_building_response(self, mcp_gap, request_id: str) -> str:
-        """Generate response when custom tool building is needed."""
-        
-        response = f"""I need to build a custom tool to help you! 🛠️
-
-**What I need:** {mcp_gap.capability_needed}
-**Why:** {mcp_gap.description}
-
-🔧 **Here's my plan:**
-1. I've analyzed your request and found I need a new capability
-2. No existing MCP (Model Context Protocol) tools match your needs
-3. I'll build a custom tool specifically for this task
-4. You might need to provide some information (like API keys)
-
-**Suggested approaches:**"""
-        
-        for solution in mcp_gap.suggested_solutions:
-            response += f"\n• {solution}"
-        
-        response += f"""
-
-**Request ID:** `{request_id}`
-
-I'll notify you when I need your input to complete the tool. This is how I continuously learn and improve! 🚀"""
-        
-        return response
-    
-    def _find_existing_mcp_request(self, capability: str) -> Optional[str]:
-        """Find if we already have a pending MCP request for this capability."""
-        capability_lower = capability.lower()
-        
-        for task in self.pending_mcp_tasks:
-            gap_id = task['gap_id']
-            gap = self.dynamic_tool_builder.active_gaps.get(gap_id)
-            if gap and capability_lower in gap.capability_needed.lower():
-                return task['request_id']
-        
-        return None
-    
-    async def _check_mcp_request_status(self, request_id: str, message: str, 
-                                      context: Dict[str, Any]) -> Dict[str, Any]:
-        """Check status of existing MCP tool request."""
-        request = self.dynamic_tool_builder.active_requests.get(request_id)
-        
-        if not request:
-            return {
-                'response': "I'm working on getting the MCP tools I need. Please try again in a moment.",
-                'mcp_solutions_found': 0
-            }
-        
-        status_messages = {
-            "analyzing": "🔍 I'm analyzing what MCP tool I need...",
-            "building": "🔧 I'm setting up the MCP connection automatically...",
-            "testing": "🧪 I'm testing the new MCP tool...",
-            "user_input_needed": f"👤 I need your help to set up an MCP! Check for collaboration request: {request_id}",
-            "completed": "✅ The MCP tool is ready! Let me retry your request...",
-            "failed": "❌ MCP setup failed. Let me try a different approach..."
-        }
-        
-        status_message = status_messages.get(request.status.value, "🔄 Working on your MCP tool request...")
-        
-        return {
-            'response': f"**MCP Tool Status:** {status_message}",
-            'request_id': request_id,
-            'status': request.status.value,
-            'mcp_solutions_found': 1  # Assume at least one if we have a request
-        }
 
     async def _log_prompt_performance(self, message: str, response: str, context: Dict[str, Any], cost: float, processing_time_ms: float):
         """Log prompt performance for self-improvement."""
@@ -957,6 +589,320 @@ I'll notify you when I need your input to complete the tool. This is how I conti
             
         except Exception as e:
             logger.error(f"Failed to log prompt performance: {e}")
+
+    async def _detect_intent(self, message: str, context: Dict[str, Any]) -> Dict[str, Any]:
+        """
+        Detect user intent and determine if it needs simple or complex handling.
+        
+        Returns:
+            Dict with intent type, complexity, and routing info
+        """
+        try:
+            message_lower = message.lower()
+            
+            # Simple intents - can be handled directly
+            simple_patterns = {
+                'greeting': ['hello', 'hi', 'hey', 'good morning', 'good afternoon'],
+                'thanks': ['thank', 'thanks', 'appreciate'],
+                'help': ['help', 'what can you do', 'how do you work'],
+                'status': ['status', 'how are you', 'are you working'],
+                'simple_question': len(message.split()) < 10 and '?' in message
+            }
+            
+            # Complex intents - need specialist agents
+            complex_patterns = {
+                'analysis': ['analyze', 'examine', 'study', 'research', 'investigate'],
+                'integration': ['integrate', 'connect', 'setup', 'configure', 'implement'],
+                'optimization': ['optimize', 'improve', 'enhance', 'performance', 'speed up'],
+                'troubleshooting': ['error', 'problem', 'issue', 'bug', 'not working', 'failed'],
+                'multi_step': message.count('?') > 1 or message.count('and') > 2,
+                'code_generation': ['code', 'script', 'function', 'algorithm', 'program'],
+                'architecture': ['architecture', 'design', 'system', 'structure', 'framework']
+            }
+            
+            # Check for simple intents first
+            for intent_type, patterns in simple_patterns.items():
+                if intent_type == 'simple_question':
+                    if patterns:  # It's a boolean, check if True
+                        return {
+                            'type': intent_type,
+                            'complexity': 'simple',
+                            'confidence': 0.8,
+                            'reasoning': 'Short question'
+                        }
+                else:
+                    if any(pattern in message_lower for pattern in patterns):
+                        return {
+                            'type': intent_type,
+                            'complexity': 'simple',
+                            'confidence': 0.9,
+                            'reasoning': f'Matched {intent_type} pattern'
+                        }
+            
+            # Check for complex intents
+            for intent_type, patterns in complex_patterns.items():
+                if intent_type in ['multi_step']:
+                    if patterns:  # It's a boolean, check if True
+                        return {
+                            'type': intent_type,
+                            'complexity': 'complex',
+                            'confidence': 0.8,
+                            'reasoning': 'Multiple questions or complex structure',
+                            'specialist_needed': self._get_specialist_type(intent_type)
+                        }
+                else:
+                    if any(pattern in message_lower for pattern in patterns):
+                        return {
+                            'type': intent_type,
+                            'complexity': 'complex',
+                            'confidence': 0.8,
+                            'reasoning': f'Matched {intent_type} pattern',
+                            'specialist_needed': self._get_specialist_type(intent_type)
+                        }
+            
+            # Default: medium complexity for current agent
+            return {
+                'type': 'general',
+                'complexity': 'simple' if len(message) < 100 else 'complex',
+                'confidence': 0.6,
+                'reasoning': 'Default classification',
+                'specialist_needed': self.specialty
+            }
+            
+        except Exception as e:
+            logger.warning(f"Intent detection failed: {e}")
+            return {
+                'type': 'general',
+                'complexity': 'simple',
+                'confidence': 0.5,
+                'reasoning': 'Fallback due to error'
+            }
+
+    def _get_specialist_type(self, intent_type: str) -> str:
+        """Map intent types to specialist agent types."""
+        specialist_mapping = {
+            'analysis': 'Data Analysis Specialist',
+            'integration': 'System Integration Specialist', 
+            'optimization': 'Performance Optimization Specialist',
+            'troubleshooting': 'Technical Support Specialist',
+            'code_generation': 'Python Development Specialist',
+            'architecture': 'System Architecture Specialist',
+            'multi_step': 'Research Specialist'
+        }
+        return specialist_mapping.get(intent_type, 'General Specialist')
+
+    async def _handle_simple_intent(self, message: str, context: Dict[str, Any], 
+                                   intent: Dict[str, Any], run_id: str, start_time: datetime) -> Dict[str, Any]:
+        """
+        Handle simple intents directly without spawning specialists.
+        """
+        try:
+            processing_time_ms = (datetime.utcnow() - start_time).total_seconds() * 1000
+            
+            # Handle specific simple intents
+            intent_type = intent['type']
+            
+            if intent_type == 'greeting':
+                response = f"Hello! I'm your {self.specialty} assistant. How can I help you today?"
+            elif intent_type == 'thanks':
+                response = "You're welcome! Feel free to ask if you need anything else."
+            elif intent_type == 'help':
+                response = f"I'm a {self.specialty} specialist. I can help with questions in my area of expertise. For complex tasks, I'll connect you with the right specialist agent."
+            elif intent_type == 'status':
+                response = f"I'm working well! Ready to help with {self.specialty} tasks."
+            elif intent_type == 'simple_question':
+                # Use lightweight LLM call for simple questions
+                response = await self._generate_simple_response(message, context)
+            else:
+                # General simple response
+                response = await self._generate_simple_response(message, context)
+            
+            # Log simple interaction
+            conversation_id = context.get("conversation_id")
+            message_id = ""
+            if conversation_id and self.supabase_logger:
+                message_id = await self._log_to_supabase(
+                    conversation_id, message, response, context, 
+                    0, 0, 0, 0.0, processing_time_ms  # Minimal tokens/cost for simple responses
+                )
+            
+            return {
+                "response": response,
+                "agent_id": self.agent_id,
+                "specialty": self.specialty,
+                "conversation_type": "simple_direct",
+                "confidence": intent['confidence'],
+                "intent": intent,
+                "tokens_used": 0,
+                "processing_time_ms": processing_time_ms,
+                "run_id": run_id,
+                "conversation_id": conversation_id,
+                "message_id": message_id,
+                "routing": "direct_response"
+            }
+            
+        except Exception as e:
+            logger.error(f"Error handling simple intent: {e}")
+            return {
+                "response": f"I apologize, but I had trouble with that simple request. Please try again.",
+                "error": str(e),
+                "intent": intent,
+                "routing": "direct_response_failed"
+            }
+
+    async def _spawn_specialist_for_complex_task(self, message: str, context: Dict[str, Any], 
+                                               intent: Dict[str, Any], run_id: str, start_time: datetime) -> Dict[str, Any]:
+        """
+        Spawn a specialist agent for complex tasks that need ReAct patterns.
+        """
+        try:
+            specialist_type = intent.get('specialist_needed', 'General Specialist')
+            
+            # For now, handle in current agent but mark as specialist work
+            # TODO: Actually spawn specialist agents when orchestrator is ready
+            logger.info(f"🔄 Complex task needs {specialist_type} - handling with enhanced processing")
+            
+            # Use the existing complex processing but mark it as specialist work
+            result = await self._handle_complex_task_with_react(message, context, intent, run_id, start_time)
+            
+            # Mark that this should have been a specialist
+            result['routing'] = 'specialist_needed'
+            result['specialist_type'] = specialist_type
+            result['note'] = f"This task should be handled by a {specialist_type} agent"
+            
+            return result
+            
+        except Exception as e:
+            logger.error(f"Error spawning specialist: {e}")
+            return {
+                "response": f"I need to connect you with a {intent.get('specialist_needed', 'specialist')} for this task, but there was an issue. Please try rephrasing your request.",
+                "error": str(e),
+                "intent": intent,
+                "routing": "specialist_spawn_failed"
+            }
+
+    async def _generate_simple_response(self, message: str, context: Dict[str, Any]) -> str:
+        """Generate a simple, direct response for basic questions."""
+        try:
+            simple_prompt = ChatPromptTemplate.from_messages([
+                ("system", f"You are a helpful {self.specialty} assistant. Give brief, direct answers to simple questions. Keep responses under 100 words."),
+                ("user", "{message}")
+            ])
+            
+            chain = simple_prompt | self.llm
+            response = await chain.ainvoke({"message": message})
+            return response.content
+            
+        except Exception as e:
+            logger.warning(f"Simple response generation failed: {e}")
+            return f"I understand you're asking about {self.specialty}. Could you rephrase your question?"
+
+    async def _handle_complex_task_with_react(self, message: str, context: Dict[str, Any], 
+                                            intent: Dict[str, Any], run_id: str, start_time: datetime) -> Dict[str, Any]:
+        """
+        Handle complex tasks using ReAct-like patterns (Think, Act, Observe).
+        This is what specialist agents would do.
+        """
+        try:
+            logger.info(f"🧠 Starting ReAct pattern for {intent['type']} task")
+            
+            # THINK: Analyze what needs to be done
+            task_plan = await self._think_about_task(message, context, intent)
+            
+            # ACT: Execute planned actions
+            action_results = []
+            for step in task_plan['steps']:
+                logger.info(f"🔧 Executing: {step['action']}")
+                step_result = await self._execute_react_step(step, message, context)
+                action_results.append(step_result)
+                
+                # OBSERVE: Check if we should continue or adjust
+                should_continue = await self._observe_and_decide(step_result, task_plan, len(action_results))
+                if not should_continue:
+                    break
+            
+            # Generate final response based on all actions
+            final_response = await self._synthesize_react_results(message, task_plan, action_results)
+            
+            processing_time_ms = (datetime.utcnow() - start_time).total_seconds() * 1000
+            
+            # Log complex interaction
+            conversation_id = context.get("conversation_id")
+            message_id = ""
+            if conversation_id and self.supabase_logger:
+                message_id = await self._log_to_supabase(
+                    conversation_id, message, final_response, context, 
+                    100, 50, 50, 0.01, processing_time_ms  # Estimate for complex task
+                )
+            
+            return {
+                "response": final_response,
+                "agent_id": self.agent_id,
+                "specialty": self.specialty,
+                "conversation_type": "complex_react",
+                "confidence": 0.8,
+                "intent": intent,
+                "task_plan": task_plan,
+                "action_results": action_results,
+                "tokens_used": 100,  # Estimate
+                "processing_time_ms": processing_time_ms,
+                "run_id": run_id,
+                "conversation_id": conversation_id,
+                "message_id": message_id,
+                "routing": "react_pattern"
+            }
+            
+        except Exception as e:
+            logger.error(f"Error in ReAct processing: {e}")
+            return {
+                "response": f"I started working on your {intent['type']} task but encountered an issue. Please try breaking it into smaller parts.",
+                "error": str(e),
+                "intent": intent,
+                "routing": "react_failed"
+            }
+
+    async def _think_about_task(self, message: str, context: Dict[str, Any], intent: Dict[str, Any]) -> Dict[str, Any]:
+        """Think step: Plan what actions are needed."""
+        return {
+            'intent': intent['type'],
+            'steps': [
+                {'action': 'analyze_requirements', 'description': 'Understand what user needs'},
+                {'action': 'gather_information', 'description': 'Collect relevant data'},
+                {'action': 'process_and_respond', 'description': 'Generate comprehensive response'}
+            ],
+            'reasoning': f"This {intent['type']} task needs structured approach"
+        }
+
+    async def _execute_react_step(self, step: Dict[str, Any], message: str, context: Dict[str, Any]) -> Dict[str, Any]:
+        """Act step: Execute a planned action."""
+        action = step['action']
+        
+        if action == 'analyze_requirements':
+            return {'action': action, 'result': 'Requirements analyzed', 'success': True}
+        elif action == 'gather_information':
+            # This would use tools, memory, etc.
+            return {'action': action, 'result': 'Information gathered', 'success': True}
+        elif action == 'process_and_respond':
+            # Generate response using current logic
+            response = await self._generate_simple_response(message, context)
+            return {'action': action, 'result': response, 'success': True}
+        else:
+            return {'action': action, 'result': 'Action completed', 'success': True}
+
+    async def _observe_and_decide(self, step_result: Dict[str, Any], task_plan: Dict[str, Any], step_count: int) -> bool:
+        """Observe step: Decide if we should continue."""
+        # Simple logic: continue if step succeeded and we haven't done too many steps
+        return step_result.get('success', False) and step_count < 5
+
+    async def _synthesize_react_results(self, message: str, task_plan: Dict[str, Any], action_results: List[Dict[str, Any]]) -> str:
+        """Synthesize all ReAct steps into final response."""
+        successful_actions = [r for r in action_results if r.get('success')]
+        
+        if successful_actions:
+            last_result = successful_actions[-1].get('result', '')
+            return f"After analyzing your {task_plan['intent']} request, here's my response:\n\n{last_result}"
+        else:
+            return f"I worked on your {task_plan['intent']} request but need more information to provide a complete answer."
 
     async def _assess_message_complexity(self, message: str, context: Dict[str, Any]) -> str:
         """
@@ -1012,24 +958,673 @@ I'll notify you when I need your input to complete the tool. This is how I conti
             return 'medium'  # Default fallback
 
     async def _execute_tools(self, message: str, context: Dict[str, Any]) -> Dict[str, Any]:
-        """Execute available tools based on the message content."""
-        tool_results = {}
+        """Execute available tools based on intelligent tool detection and planning."""
         
+        # Step 1: Check if this should use code generation instead of tools
+        if self._should_use_code_generation(message):
+            code_result = await self._handle_with_code_generation(message, context)
+            if code_result and code_result.get('success'):
+                return {'code_execution': code_result}
+        
+        # Step 2: Fast rule-based tool detection (no LLM calls)
+        needed_tools = self._detect_required_tools(message)
+        if not needed_tools:
+            return {}
+        
+        # Step 3: Plan tool execution sequence
+        tool_plan = self._plan_tool_execution(needed_tools, message)
+        
+        # Step 4: Execute with failure recovery and caching
+        return await self._execute_tool_plan(tool_plan, message, context)
+
+    def _should_use_code_generation(self, message: str) -> bool:
+        """Determine if message should be handled with code generation."""
+        msg_lower = message.lower()
+        
+        # Only use code generation for complex calculations or when tools unavailable
+        # Check if we have calculate tools available first
+        has_calc_tool = any('calculate' in tool.name.lower() for tool in self.tools if tool.enabled)
+        
+        # For simple math with available tools, use tools instead
+        import re
+        if re.search(r'^\s*calculate\s+\d+\s*[+\-*/]\s*\d+\s*$', message.lower()) and has_calc_tool:
+            return False
+        
+        # Complex calculations or multi-step math
+        if any(word in msg_lower for word in ['percentage', 'tip', 'interest', 'formula', 'compound']):
+            return True
+        
+        # Programming-like requests
+        if any(word in msg_lower for word in ['code', 'python', 'script', 'function']):
+            return True
+        
+        # Mathematical expressions only if no calc tool available
+        if re.search(r'\d+\s*[+\-*/]\s*\d+', message) and not has_calc_tool:
+            return True
+        
+        return False
+
+    async def _handle_with_code_generation(self, message: str, context: Dict[str, Any]) -> Dict[str, Any]:
+        """Handle request using code generation inspired by SimpleCodeAgent."""
+        try:
+            # Create code generation prompt
+            code_prompt = self._create_code_generation_prompt()
+            
+            # Generate code using LLM
+            chain = code_prompt | self.llm
+            llm_response = await chain.ainvoke({"message": message})
+            generated_code = llm_response.content
+            
+            logger.info(f"LLM generated response: {generated_code[:200]}...")
+            
+            # Extract Python code from response
+            executable_code = self._extract_python_code(generated_code)
+            
+            if not executable_code:
+                logger.warning(f"No executable code extracted from LLM response: {generated_code}")
+                return {"success": False, "error": "No executable code generated", "raw_response": generated_code}
+            
+            logger.info(f"Extracted executable code: {executable_code}")
+            
+            # Execute code with tools available
+            execution_result = await self._execute_generated_code(executable_code, message, context)
+            
+            return {
+                "success": execution_result.get("success", False),
+                "code": executable_code,
+                "output": execution_result.get("output", ""),
+                "execution_result": execution_result
+            }
+            
+        except Exception as e:
+            logger.error(f"Code generation failed: {e}")
+            return {"success": False, "error": str(e)}
+
+    def _create_code_generation_prompt(self) -> ChatPromptTemplate:
+        """Create prompt for code generation inspired by SimpleCodeAgent."""
+        
+        # Get available tools for code execution
+        tools_info = []
+        for tool in self.tools:
+            if tool.enabled and tool.function:
+                doc = getattr(tool.function, '__doc__', 'No description')
+                first_line = doc.split('\n')[0].strip() if doc else "No description"
+                tools_info.append(f"- {tool.name}: {first_line}")
+        
+        tools_list = "\n".join(tools_info) if tools_info else "- No tools available"
+        
+        system_template = f"""You are a code-generating AI that can write Python code to solve problems.
+
+**Available Tools as Functions:**
+{tools_list}
+
+**Instructions:**
+1. Write Python code to solve the user's request
+2. Use available tool functions when needed
+3. Always wrap your code in ```python code blocks
+4. Be direct - write executable code, not explanations
+5. For calculations, show the result clearly
+
+**Examples:**
+
+User: "What's 15% tip on $50?"
+```python
+bill = 50
+tip_rate = 0.15
+tip = bill * tip_rate
+total = bill + tip
+print(f"Tip: ${{{{tip:.2f}}}}")
+print(f"Total: ${{{{total:.2f}}}}")
+```
+
+User: "Calculate compound interest on $1000 at 5% for 3 years"
+```python
+principal = 1000
+rate = 0.05
+time = 3
+amount = principal * (1 + rate) ** time
+interest = amount - principal
+print(f"Principal: ${{{{principal}}}}")
+print(f"Amount after {{{{time}}}} years: ${{{{amount:.2f}}}}")
+print(f"Interest earned: ${{{{interest:.2f}}}}")
+```
+
+**Important:**
+- Always use ```python code blocks
+- Write executable Python code only
+- No explanations outside code blocks
+- Use available tools when appropriate
+- Make calculations clear with print statements"""
+
+        human_template = """User request: {message}
+
+Generate Python code to solve this request. Wrap your code in ```python code blocks."""
+
+        return ChatPromptTemplate.from_messages([
+            ("system", system_template),
+            ("human", human_template)
+        ])
+
+    def _extract_python_code(self, llm_response: str) -> str:
+        """Extract Python code from LLM response."""
+        import re
+        
+        # Clean the response
+        response = llm_response.strip()
+        
+        logger.debug(f"Extracting code from response: {response[:100]}...")
+        
+        # If response starts with ```python, extract everything after it
+        if response.startswith('```python'):
+            # Remove ```python and any trailing ```
+            code = response[9:].strip()  # Remove ```python
+            if code.endswith('```'):
+                code = code[:-3].strip()  # Remove trailing ```
+            logger.debug(f"Found code with ```python block: {code}")
+            return code
+        
+        # Try to find ```python code blocks
+        python_blocks = re.findall(r'```python\n(.*?)\n```', response, re.DOTALL)
+        if python_blocks:
+            code = python_blocks[0].strip()
+            logger.debug(f"Found code with regex python block: {code}")
+            return code
+        
+        # Try to find any ``` code blocks
+        code_blocks = re.findall(r'```\n(.*?)\n```', response, re.DOTALL)
+        if code_blocks:
+            code = code_blocks[0].strip()
+            logger.debug(f"Found code with generic block: {code}")
+            return code
+        
+        # Try to find python code blocks without newlines
+        python_blocks_inline = re.findall(r'```python(.*?)```', response, re.DOTALL)
+        if python_blocks_inline:
+            code = python_blocks_inline[0].strip()
+            logger.debug(f"Found inline python block: {code}")
+            return code
+        
+        # Look for lines that look like executable Python code
+        lines = response.split('\n')
+        code_lines = []
+        in_code = False
+        
+        for line in lines:
+            stripped = line.strip()
+            
+            # Skip explanatory text
+            if any(phrase in stripped.lower() for phrase in ['to calculate', 'let\'s', 'we can', 'follow these steps']):
+                continue
+                
+            # Look for actual Python code patterns
+            if (stripped.startswith(('result =', 'calc =', 'tip =', 'total =', 'print(', 'bill =', 'amount =')) or
+                any(pattern in stripped for pattern in ['=', '*', '/', '+', '-']) or
+                stripped.startswith(('if ', 'for ', 'while ', 'def ', 'import ', 'from '))):
+                in_code = True
+                code_lines.append(line)
+            elif in_code and (stripped.startswith('    ') or stripped == ''):
+                # Continue if we're in a code block (indented lines or empty lines)
+                code_lines.append(line)
+            elif stripped and not any(phrase in stripped.lower() for phrase in ['calculate', 'step', 'result']):
+                # Stop if we hit non-code text
+                in_code = False
+        
+        if code_lines:
+            code = '\n'.join(code_lines).strip()
+            logger.debug(f"Found code from line analysis: {code}")
+            return code
+        
+        # Fallback: if it looks like simple math, make it a calculation
+        if any(op in response for op in ['+', '-', '*', '/', '%']) and len(response.split()) < 10:
+            code = f'result = {response.strip()}\nprint(f"Result: {{result}}")'
+            logger.debug(f"Generated simple math code: {code}")
+            return code
+        
+        # Last resort: if response contains mathematical expressions, try to extract them
+        math_match = re.search(r'(\d+(?:\.\d+)?)\s*([+\-*/])\s*(\d+(?:\.\d+)?)', response)
+        if math_match:
+            expression = math_match.group(0)
+            code = f'result = {expression}\nprint(f"Result: {{result}}")'
+            logger.debug(f"Generated math expression code: {code}")
+            return code
+        
+        logger.warning(f"Could not extract any executable code from: {response}")
+        return ""
+
+    async def _execute_generated_code(self, code: str, original_message: str, context: Dict[str, Any]) -> Dict[str, Any]:
+        """Execute generated code with tool access in safe environment."""
+        try:
+            # Create execution environment with tools
+            exec_globals = {
+                "__builtins__": {
+                    "print": print, "len": len, "str": str, "int": int, "float": float,
+                    "range": range, "enumerate": enumerate, "zip": zip, "abs": abs,
+                    "round": round, "min": min, "max": max, "sum": sum
+                }
+            }
+            
+            # Add available tools to execution environment
+            for tool in self.tools:
+                if tool.enabled and tool.function:
+                    exec_globals[tool.name] = tool.function
+            
+            # Capture output
+            output_lines = []
+            
+            def capture_print(*args, **kwargs):
+                output_lines.append(" ".join(str(arg) for arg in args))
+            
+            exec_globals["print"] = capture_print
+            
+            # Execute the code
+            exec(code, exec_globals)
+            
+            output = "\n".join(output_lines) if output_lines else "Code executed successfully"
+            
+            return {
+                "success": True,
+                "output": output,
+                "code": code,
+                "method": "code_generation"
+            }
+            
+        except Exception as e:
+            logger.warning(f"Code execution failed: {e}")
+            return {
+                "success": False,
+                "output": f"Execution error: {str(e)}",
+                "error": str(e),
+                "code": code,
+                "suggestion": "Try simplifying the request or check for syntax errors"
+            }
+
+    def _detect_required_tools(self, message: str) -> List[str]:
+        """Rule-based tool detection - fast and reliable."""
+        needed = []
+        msg_lower = message.lower()
+        
+        # Simple keyword mapping to tool types
+        tool_keywords = {
+            'search': ['search', 'find', 'lookup', 'google', 'web', 'online'],
+            'calculate': ['calculate', 'math', 'compute', '+', '-', '*', '/', 'percentage', 'tip'],
+            'file': ['file', 'read', 'write', 'save', 'load', 'download'],
+            'api': ['api', 'call', 'request', 'fetch', 'get', 'post'],
+            'analyze': ['analyze', 'analysis', 'examine', 'review', 'study'],
+            'web_search': ['search', 'find', 'lookup', 'google', 'information about']
+        }
+        
+        # Check each tool category
+        for tool_type, keywords in tool_keywords.items():
+            if any(kw in msg_lower for kw in keywords):
+                # Only add if we actually have this tool available
+                available_tool_names = [tool.name for tool in self.tools if tool.enabled]
+                if any(tool_type in tool_name.lower() for tool_name in available_tool_names):
+                    needed.append(tool_type)
+        
+        # Check for specific mathematical expressions
+        import re
+        if re.search(r'\d+\s*[+\-*/]\s*\d+', message):
+            needed.append('calculate')
+        
+        logger.debug(f"Detected required tools: {needed}")
+        return needed
+
+    def _plan_tool_execution(self, tools: List[str], message: str) -> List[Dict]:
+        """Plan tool execution order with basic sequencing."""
+        plan = []
+        
+        # Simple sequencing rules for common patterns
+        if 'search' in tools and 'analyze' in tools:
+            # Search first, then analyze results
+            plan = [
+                {'tool_type': 'search', 'input': message, 'depends_on': None},
+                {'tool_type': 'analyze', 'input': 'use search results', 'depends_on': 'search'}
+            ]
+        elif 'search' in tools and 'calculate' in tools:
+            # Search for data, then calculate
+            plan = [
+                {'tool_type': 'search', 'input': message, 'depends_on': None},
+                {'tool_type': 'calculate', 'input': 'use search results', 'depends_on': 'search'}
+            ]
+        else:
+            # Single tool or parallel execution
+            for tool in tools:
+                plan.append({'tool_type': tool, 'input': message, 'depends_on': None})
+        
+        logger.debug(f"Tool execution plan: {plan}")
+        return plan
+
+    async def _execute_tool_plan(self, plan: List[Dict], message: str, context: Dict) -> Dict:
+        """Execute tools in sequence with caching and failure handling."""
+        results = {}
+        tool_context = context.copy()
+        
+        # Add conversation context to tool execution
+        tool_context.update({
+            'conversation_history': self.conversation_context,
+            'previous_tool_results': self.conversation_context['tool_results_history'][-5:],  # Last 5 results
+            'user_preferences': self.conversation_context['user_preferences'],
+            'session_data': self.conversation_context['session_data'],
+            'previous_queries': self.conversation_context['previous_queries'][-3:]  # Last 3 queries
+        })
+        
+        for step in plan:
+            tool_type = step['tool_type']
+            depends_on = step.get('depends_on')
+            
+            try:
+                # Skip if dependency failed
+                if depends_on and depends_on in results and 'error' in results[depends_on]:
+                    results[tool_type] = {"error": f"Dependency {depends_on} failed"}
+                    continue
+                
+                # Find matching tool
+                matching_tool = self._find_matching_tool(tool_type)
+                if not matching_tool:
+                    results[tool_type] = {"error": f"Tool {tool_type} not available"}
+                    continue
+                
+                # Check cache first (with context-aware caching)
+                cache_key = self._get_context_aware_cache_key(matching_tool.name, message, tool_context)
+                if cache_key in self.tool_cache:
+                    cached_result, timestamp = self.tool_cache[cache_key]
+                    if time.time() - timestamp < self.cache_ttl:
+                        logger.info(f"Cache hit for {matching_tool.name}")
+                        results[tool_type] = cached_result
+                        continue
+                
+                # Prepare enhanced input based on dependencies and context
+                tool_input = message
+                if depends_on and depends_on in results:
+                    tool_context['previous_results'] = results
+                    tool_context[f'{depends_on}_result'] = results[depends_on]
+                
+                # Add context from successful patterns
+                if self.conversation_context['successful_patterns']:
+                    tool_context['successful_patterns'] = self.conversation_context['successful_patterns']
+                
+                # Execute tool with timeout
+                result = await asyncio.wait_for(
+                    matching_tool.function(tool_input, tool_context),
+                    timeout=30.0  # 30 second timeout
+                )
+                
+                # Validate result
+                if self._validate_tool_result(result):
+                    results[tool_type] = result
+                    
+                    # Cache successful result with context
+                    self.tool_cache[cache_key] = (result, time.time())
+                    
+                    # Track successful execution pattern
+                    self._track_successful_pattern(tool_type, message, result, tool_context)
+                else:
+                    # Try retry with fallback
+                    retry_result = await self._retry_tool_with_fallback(matching_tool, tool_input, tool_context)
+                    results[tool_type] = retry_result
+                    
+                    # Track failed pattern if retry also failed
+                    if 'error' in retry_result:
+                        self._track_failed_pattern(tool_type, message, tool_context)
+                
+            except asyncio.TimeoutError:
+                results[tool_type] = await self._handle_tool_timeout(tool_type, message)
+                self._track_failed_pattern(tool_type, message, tool_context, "timeout")
+            except Exception as e:
+                results[tool_type] = await self._handle_tool_failure(tool_type, e, message)
+                self._track_failed_pattern(tool_type, message, tool_context, str(e))
+        
+        # Update conversation context with results
+        self._update_conversation_context(message, results, context)
+        
+        return results
+
+    def _get_context_aware_cache_key(self, tool_name: str, message: str, context: Dict) -> str:
+        """Generate context-aware cache key that considers user preferences and session data."""
+        import hashlib
+        
+        # Include relevant context factors in cache key
+        context_factors = {
+            'tool_name': tool_name,
+            'message': message,
+            'user_id': context.get('user_id', 'unknown'),
+            'user_preferences': str(self.conversation_context['user_preferences']),
+            'session_data': str(self.conversation_context['session_data'])
+        }
+        
+        content = "|".join(f"{k}:{v}" for k, v in context_factors.items())
+        return hashlib.md5(content.encode()).hexdigest()
+
+    def _track_successful_pattern(self, tool_type: str, message: str, result: Dict, context: Dict):
+        """Track successful tool execution patterns for learning."""
+        pattern = {
+            'tool_type': tool_type,
+            'message_type': self._classify_message_type(message),
+            'success_timestamp': time.time(),
+            'result_type': type(result).__name__,
+            'context_factors': {
+                'user_id': context.get('user_id'),
+                'message_length': len(message),
+                'has_dependencies': bool(context.get('previous_results'))
+            }
+        }
+        
+        # Add to successful patterns (keep last 20)
+        self.conversation_context['successful_patterns'].append(pattern)
+        if len(self.conversation_context['successful_patterns']) > 20:
+            self.conversation_context['successful_patterns'] = self.conversation_context['successful_patterns'][-20:]
+
+    def _track_failed_pattern(self, tool_type: str, message: str, context: Dict, error_type: str = "unknown"):
+        """Track failed tool execution patterns to avoid repeating mistakes."""
+        pattern = {
+            'tool_type': tool_type,
+            'message_type': self._classify_message_type(message),
+            'failure_timestamp': time.time(),
+            'error_type': error_type,
+            'context_factors': {
+                'user_id': context.get('user_id'),
+                'message_length': len(message),
+                'has_dependencies': bool(context.get('previous_results'))
+            }
+        }
+        
+        # Add to failed patterns (keep last 10)
+        self.conversation_context['failed_patterns'].append(pattern)
+        if len(self.conversation_context['failed_patterns']) > 10:
+            self.conversation_context['failed_patterns'] = self.conversation_context['failed_patterns'][-10:]
+
+    def _classify_message_type(self, message: str) -> str:
+        """Classify message type for pattern tracking."""
+        msg_lower = message.lower()
+        
+        if any(word in msg_lower for word in ['calculate', 'math', '+', '-', '*', '/']):
+            return 'calculation'
+        elif any(word in msg_lower for word in ['search', 'find', 'lookup']):
+            return 'search'
+        elif any(word in msg_lower for word in ['analyze', 'examine', 'study']):
+            return 'analysis'
+        elif any(word in msg_lower for word in ['file', 'read', 'write', 'save']):
+            return 'file_operation'
+        else:
+            return 'general'
+
+    def _update_conversation_context(self, message: str, results: Dict, context: Dict):
+        """Update conversation context with new interaction data."""
+        # Add to previous queries
+        self.conversation_context['previous_queries'].append({
+            'message': message,
+            'timestamp': time.time(),
+            'user_id': context.get('user_id', 'unknown')
+        })
+        
+        # Keep only last 10 queries
+        if len(self.conversation_context['previous_queries']) > 10:
+            self.conversation_context['previous_queries'] = self.conversation_context['previous_queries'][-10:]
+        
+        # Add to tool results history
+        if results:
+            self.conversation_context['tool_results_history'].append({
+                'message': message,
+                'results': results,
+                'timestamp': time.time(),
+                'user_id': context.get('user_id', 'unknown')
+            })
+            
+            # Keep only last 20 tool results
+            if len(self.conversation_context['tool_results_history']) > 20:
+                self.conversation_context['tool_results_history'] = self.conversation_context['tool_results_history'][-20:]
+        
+        # Learn user preferences from successful interactions
+        self._learn_user_preferences(message, results, context)
+
+    def _learn_user_preferences(self, message: str, results: Dict, context: Dict):
+        """Learn user preferences from interaction patterns."""
+        user_id = context.get('user_id')
+        if not user_id:
+            return
+        
+        # Initialize user preferences if not exists
+        if user_id not in self.conversation_context['user_preferences']:
+            self.conversation_context['user_preferences'][user_id] = {
+                'preferred_tools': {},
+                'message_patterns': {},
+                'interaction_count': 0
+            }
+        
+        user_prefs = self.conversation_context['user_preferences'][user_id]
+        user_prefs['interaction_count'] += 1
+        
+        # Track tool usage preferences
+        for tool_type, result in results.items():
+            if 'error' not in result:  # Only track successful tool usage
+                if tool_type not in user_prefs['preferred_tools']:
+                    user_prefs['preferred_tools'][tool_type] = 0
+                user_prefs['preferred_tools'][tool_type] += 1
+        
+        # Track message pattern preferences
+        message_type = self._classify_message_type(message)
+        if message_type not in user_prefs['message_patterns']:
+            user_prefs['message_patterns'][message_type] = 0
+        user_prefs['message_patterns'][message_type] += 1
+
+    def _find_matching_tool(self, tool_type: str) -> Optional[Any]:
+        """Find tool that matches the required type."""
         for tool in self.tools:
             if not tool.enabled or not tool.function:
                 continue
-                
-            try:
-                # Simple tool execution - can be enhanced with more sophisticated matching
-                if tool.name.lower() in message.lower():
-                    result = await tool.function(message, context) if asyncio.iscoroutinefunction(tool.function) else tool.function(message, context)
-                    tool_results[tool.name] = result
-                    logger.debug(f"Executed tool '{tool.name}' for Universal Agent '{self.specialty}'")
-            except Exception as e:
-                logger.warning(f"Error executing tool '{tool.name}': {str(e)}")
-                tool_results[tool.name] = {"error": str(e)}
+            
+            # Check if tool name contains the type
+            if tool_type.lower() in tool.name.lower():
+                return tool
+            
+            # Check common aliases
+            aliases = {
+                'search': ['web_search', 'google', 'lookup'],
+                'calculate': ['calc', 'math', 'compute'],
+                'file': ['file_ops', 'filesystem'],
+                'analyze': ['analysis', 'examine']
+            }
+            
+            if tool_type in aliases:
+                for alias in aliases[tool_type]:
+                    if alias in tool.name.lower():
+                        return tool
         
-        return tool_results
+        return None
+
+    def _get_tool_cache_key(self, tool_name: str, message: str) -> str:
+        """Generate cache key for tool result."""
+        import hashlib
+        content = f"{tool_name}:{message}"
+        return hashlib.md5(content.encode()).hexdigest()
+
+    def _validate_tool_result(self, result: Dict) -> bool:
+        """Validate tool result makes sense."""
+        if not result:
+            return False
+        
+        # Check for obvious errors
+        if isinstance(result, dict) and 'error' in result:
+            return False
+        
+        # Check for empty results
+        if isinstance(result, dict) and not result:
+            return False
+            
+        # Check for timeout or failure indicators
+        if isinstance(result, str) and any(indicator in result.lower() for indicator in ['timeout', 'failed', 'error']):
+            return False
+        
+        return True
+
+    async def _retry_tool_with_fallback(self, tool, message: str, context: Dict) -> Dict:
+        """Retry tool with simplified input."""
+        try:
+            # Try with simplified message (first sentence only)
+            simplified = message.split('.')[0].strip()
+            if simplified != message:
+                logger.info(f"Retrying {tool.name} with simplified input")
+                result = await tool.function(simplified, context)
+                if self._validate_tool_result(result):
+                    return result
+        except Exception as e:
+            logger.warning(f"Tool retry failed for {tool.name}: {e}")
+        
+        return {"error": "Tool retry failed", "original_input": message}
+
+    async def _handle_tool_timeout(self, tool_type: str, message: str) -> Dict:
+        """Handle tool timeout with user guidance."""
+        return {
+            "error": "timeout",
+            "message": f"Tool {tool_type} timed out",
+            "suggestion": f"Try simplifying your request or try again later",
+            "partial_result": f"I was working on {tool_type} for your request but it's taking too long"
+        }
+
+    async def _handle_tool_failure(self, tool_type: str, error: Exception, message: str) -> Dict:
+        """Handle tool failures with fallback strategies."""
+        logger.warning(f"Tool {tool_type} failed: {error}")
+        
+        # Try alternative tools
+        alternatives = self._get_alternative_tools(tool_type)
+        for alt_tool in alternatives:
+            try:
+                logger.info(f"Trying alternative tool: {alt_tool.name}")
+                result = await alt_tool.function(message, {})
+                if self._validate_tool_result(result):
+                    return {
+                        "result": result,
+                        "used_alternative": alt_tool.name,
+                        "original_tool_failed": tool_type
+                    }
+            except Exception:
+                continue
+        
+        # No alternatives worked
+        return {
+            "error": str(error),
+            "fallback_message": f"Tool {tool_type} is currently unavailable",
+            "suggestion": self._get_tool_failure_suggestion(tool_type, message)
+        }
+
+    def _get_alternative_tools(self, failed_tool: str) -> List:
+        """Get alternative tools for common failures."""
+        alternatives = {
+            'search': [t for t in self.tools if any(keyword in t.name.lower() for keyword in ['web', 'google', 'lookup'])],
+            'calculate': [t for t in self.tools if any(keyword in t.name.lower() for keyword in ['math', 'calc', 'compute'])],
+            'file': [t for t in self.tools if any(keyword in t.name.lower() for keyword in ['file', 'read', 'write'])],
+        }
+        return alternatives.get(failed_tool, [])
+
+    def _get_tool_failure_suggestion(self, tool_type: str, message: str) -> str:
+        """Provide helpful suggestion when tool fails."""
+        suggestions = {
+            'search': "Try rephrasing your search query or check your internet connection",
+            'calculate': "Try breaking down complex calculations into simpler steps",
+            'file': "Check file permissions and ensure the file path is correct",
+            'api': "Check API credentials and network connectivity"
+        }
+        return suggestions.get(tool_type, "Please try again or rephrase your request")
     
     async def _generate_specialist_response(self, message: str, context: Dict[str, Any], 
                                           history_context: str, memory_context: str, 
@@ -2364,169 +2959,73 @@ I'll notify you when I need your input to complete the tool. This is how I conti
             "projection_based_on": f"{self.performance_metrics['total_interactions']} interactions"
         }
     
-    async def check_mcp_tool_requests_status(self, user_id: str) -> Optional[Dict[str, Any]]:
+    async def get_mcp_status(self) -> Dict[str, Any]:
         """
-        Check status of MCP tool creation requests for this user.
+        Get status of MCP integration using the official SDK.
         
-        This method can be called by Slack interface or other UIs
-        to show users what MCP tool requests need their attention.
+        Returns:
+            MCP integration status and available tools
         """
-        if not self.dynamic_tool_builder:
-            return None
-        
-        collaboration_request = await self.dynamic_tool_builder.get_user_collaboration_request(user_id)
-        
-        if collaboration_request:
-            # Find the corresponding pending task
-            pending_task = None
-            for task in self.pending_mcp_tasks:
-                if task['request_id'] == collaboration_request['request_id']:
-                    pending_task = task
-                    break
-            
-            if pending_task:
-                collaboration_request['original_task'] = {
-                    'message': pending_task['message'],
-                    'agent': self.specialty,
-                    'created_at': pending_task['created_at'].isoformat(),
-                    'mcp_solutions_available': pending_task.get('mcp_solutions_count', 0) > 0
+        try:
+            if not self.mcp_registry:
+                return {
+                    'mcp_enabled': False,
+                    'implementation': 'official_mcp_sdk',
+                    'message': 'MCP registry not initialized'
                 }
-        
-        return collaboration_request
-    
-    async def handle_mcp_tool_ready(self, request_id: str) -> Optional[Dict[str, Any]]:
-        """
-        Handle notification that a requested MCP tool is ready.
-        
-        This completes any pending tasks that were waiting for the MCP tool.
-        """
-        try:
-            # Find pending task for this request
-            pending_task = None
-            for i, task in enumerate(self.pending_mcp_tasks):
-                if task['request_id'] == request_id:
-                    pending_task = self.pending_mcp_tasks.pop(i)
-                    break
             
-            if not pending_task:
-                logger.warning(f"No pending MCP task found for request {request_id}")
-                return None
-            
-            # Reload MCP tools to include the new tool
-            if self.mcp_tool_registry:
-                await self._reload_available_mcp_tools()
-            
-            # Retry the original task with the new MCP tool
-            logger.info(f"🔄 Retrying original task with new MCP tool: {pending_task['message'][:50]}...")
-            
-            result = await self.process_message(
-                pending_task['message'],
-                pending_task['context']
-            )
-            
-            # Enhanced response indicating MCP tool was used
-            if result.get('confidence', 0) >= 0.7:
-                result['mcp_tool_creation_success'] = True
-                result['original_request_id'] = request_id
-                result['response'] = f"✅ **Task completed with new MCP tool!**\n\n{result['response']}\n\n*I successfully set up and used a new MCP tool to complete your original request.*"
-            
-            return result
+            # Use official MCP registry to get status
+            from mcp import get_mcp_status
+            return await get_mcp_status()
             
         except Exception as e:
-            logger.error(f"Error handling MCP tool ready notification: {e}")
-            return None
+            logger.error(f"Error getting MCP status: {e}")
+            return {
+                'mcp_enabled': False,
+                'error': str(e),
+                'implementation': 'official_mcp_sdk'
+            }
     
-    async def _reload_available_mcp_tools(self):
-        """Reload available MCP tools from the registry."""
-        try:
-            if self.mcp_tool_registry:
-                # Get updated MCP tool list
-                available_tools = await self.mcp_tool_registry.get_available_tools()
-                
-                # Convert to ToolCapability objects and add to agent
-                for tool_info in available_tools:
-                    tool_capability = ToolCapability(
-                        name=tool_info['tool_name'],
-                        description=tool_info['description'],
-                        function=self._create_mcp_tool_function(tool_info['tool_id']),
-                        enabled=True
-                    )
-                    
-                    # Add if not already present
-                    if not any(t.name == tool_capability.name for t in self.tools):
-                        self.tools.append(tool_capability)
-                        logger.info(f"📦 Added new MCP tool: {tool_capability.name}")
-                        
-        except Exception as e:
-            logger.error(f"Error reloading MCP tools: {e}")
-    
-    def _create_mcp_tool_function(self, tool_id: str) -> callable:
-        """Create a function wrapper for MCP tool execution."""
-        async def mcp_tool_wrapper(message: str, context: Dict[str, Any]) -> Dict[str, Any]:
-            try:
-                if self.mcp_tool_registry:
-                    # Extract parameters from message (simplified)
-                    parameters = {"message": message, "context": context}
-                    return await self.mcp_tool_registry.execute_tool(tool_id, parameters)
-                else:
-                    return {"error": "MCP tool registry not available"}
-            except Exception as e:
-                return {"error": f"MCP tool execution failed: {str(e)}"}
+    async def sync_mcp_tools(self) -> bool:
+        """
+        Sync available MCP tools with the official registry.
         
-        return mcp_tool_wrapper
+        Returns:
+            True if sync successful, False otherwise
+        """
+        try:
+            if not self.mcp_registry:
+                return False
+            
+            # Get tools from official MCP registry
+            available_tools = self.mcp_registry.get_available_tools()
+            
+            # Track usage
+            tool_count = len(available_tools)
+            self.last_mcp_sync = datetime.utcnow()
+            
+            logger.info(f"🔄 Synced {tool_count} MCP tools for {self.specialty}")
+            return True
+            
+        except Exception as e:
+            logger.error(f"Error syncing MCP tools: {e}")
+            return False
     
-    async def get_pending_mcp_tasks_count(self) -> int:
-        """Get count of pending tasks waiting for MCP tools."""
-        return len(self.pending_mcp_tasks)
-    
-    async def get_mcp_requests_summary(self) -> Dict[str, Any]:
-        """Get summary of MCP tool requests for monitoring."""
+    def get_mcp_usage_stats(self) -> Dict[str, Any]:
+        """Get MCP tool usage statistics."""
         return {
-            "active_mcp_requests": len(self.mcp_tool_requests),
-            "pending_mcp_tasks": len(self.pending_mcp_tasks),
-            "capabilities_requested": [
-                self.dynamic_tool_builder.active_gaps[gap_id].capability_needed
-                for gap_id in self.mcp_tool_requests.keys()
-                if self.dynamic_tool_builder and gap_id in self.dynamic_tool_builder.active_gaps
-            ],
-            "recent_mcp_requests": [
-                {
-                    "capability": self.dynamic_tool_builder.active_gaps[task['gap_id']].capability_needed if self.dynamic_tool_builder and task['gap_id'] in self.dynamic_tool_builder.active_gaps else "unknown",
-                    "created_at": task['created_at'].isoformat(),
-                    "mcp_solutions_available": task.get('mcp_solutions_count', 0) > 0,
-                    "status": self.dynamic_tool_builder.active_requests.get(task['request_id'], {}).status.value if self.dynamic_tool_builder and hasattr(self.dynamic_tool_builder.active_requests.get(task['request_id'], {}), 'status') else 'unknown'
-                }
-                for task in self.pending_mcp_tasks[-5:]  # Last 5 requests
-            ]
+            'mcp_enabled': bool(self.mcp_registry),
+            'tool_usage': self.mcp_tool_usage.copy(),
+            'last_sync': self.last_mcp_sync.isoformat() if self.last_mcp_sync else None,
+            'total_mcp_calls': sum(self.mcp_tool_usage.values()),
+            'unique_tools_used': len(self.mcp_tool_usage)
         }
-    
-    async def _save_pending_mcp_tasks(self):
-        """Save pending MCP tasks to vector store for recovery."""
-        try:
-            if self.pending_mcp_tasks:
-                tasks_data = {
-                    'agent_id': self.agent_id,
-                    'specialty': self.specialty,
-                    'pending_tasks': self.pending_mcp_tasks,
-                    'saved_at': datetime.utcnow().isoformat()
-                }
-                
-                # Store in vector memory for recovery
-                await self.persist_learning('pending_mcp_tasks', tasks_data)
-                logger.info(f"💾 Saved {len(self.pending_mcp_tasks)} pending MCP tasks for {self.specialty}")
-                
-        except Exception as e:
-            logger.error(f"Error saving pending MCP tasks: {e}")
 
     async def close(self):
         """Close the agent and cleanup platform resources."""
         try:
-            # Save working memory and MCP state before closing to prevent state loss
+            # Save working memory before closing to prevent state loss
             await self.save_working_memory()
-            
-            # Save pending MCP tasks for later recovery
-            if self.pending_mcp_tasks:
-                await self._save_pending_mcp_tasks()
             
             logger.info(f"Closing Universal Agent '{self.specialty}' connections...")
             
@@ -2548,12 +3047,12 @@ I'll notify you when I need your input to complete the tool. This is how I conti
             if self.event_bus:
                 await self.event_bus.unsubscribe(self.agent_id)
             
-            # Close MCP integrations
-            if self.mcp_tool_registry:
+            # Close MCP integrations (official SDK)
+            if self.mcp_registry:
                 try:
-                    await self.mcp_tool_registry.close()
+                    await self.mcp_registry.shutdown()
                 except Exception as e:
-                    logger.warning(f"Error closing MCP tool registry: {e}")
+                    logger.warning(f"Error closing MCP registry: {e}")
             
             # Close tool resources
             for tool in self.tools:
@@ -2567,3 +3066,87 @@ I'll notify you when I need your input to complete the tool. This is how I conti
             
         except Exception as e:
             logger.warning(f"Error closing Universal Agent '{self.specialty}': {e}") 
+
+    def get_enhanced_tool_stats(self) -> Dict[str, Any]:
+        """Get comprehensive statistics about the enhanced tool execution system."""
+        return {
+            "tool_execution_system": {
+                "version": "enhanced_v2",
+                "features": [
+                    "rule_based_tool_detection",
+                    "execution_planning_with_dependencies", 
+                    "context_aware_caching",
+                    "failure_recovery_with_alternatives",
+                    "conversation_context_persistence",
+                    "code_generation_integration",
+                    "pattern_learning_and_tracking"
+                ]
+            },
+            "available_tools": [
+                {
+                    "name": tool.name,
+                    "enabled": tool.enabled,
+                    "has_function": tool.function is not None,
+                    "description": tool.description
+                }
+                for tool in self.tools
+            ] if self.tools else [],
+            "cache_status": {
+                "enabled": hasattr(self, 'tool_cache'),
+                "cache_size": len(getattr(self, 'tool_cache', {})),
+                "cache_ttl_hours": getattr(self, 'cache_ttl', 3600) / 3600
+            },
+            "conversation_context": {
+                "tool_results_tracked": len(self.conversation_context.get('tool_results_history', [])),
+                "successful_patterns": len(self.conversation_context.get('successful_patterns', [])),
+                "failed_patterns": len(self.conversation_context.get('failed_patterns', [])),
+                "user_preferences_learned": len(self.conversation_context.get('user_preferences', {})),
+                "previous_queries_tracked": len(self.conversation_context.get('previous_queries', []))
+            },
+            "code_generation": {
+                "enabled": True,
+                "triggers": ["mathematical_expressions", "calculations", "programming_requests"],
+                "execution_environment": "safe_isolated"
+            },
+            "capabilities": {
+                "tool_chaining": True,
+                "dependency_handling": True,
+                "timeout_protection": True,
+                "alternative_fallbacks": True,
+                "result_validation": True,
+                "context_persistence": True,
+                "pattern_learning": True,
+                "user_preference_tracking": True
+            }
+        }
+
+    def clear_conversation_context(self):
+        """Clear conversation context (useful for testing or new sessions)."""
+        self.conversation_context = {
+            'tool_results_history': [],
+            'user_preferences': {},
+            'session_data': {},
+            'previous_queries': [],
+            'successful_patterns': [],
+            'failed_patterns': []
+        }
+        logger.info(f"Cleared conversation context for agent {self.agent_id}")
+
+    def get_user_preferences(self, user_id: str) -> Dict[str, Any]:
+        """Get learned preferences for a specific user."""
+        return self.conversation_context.get('user_preferences', {}).get(user_id, {
+            'preferred_tools': {},
+            'message_patterns': {},
+            'interaction_count': 0
+        })
+
+    def export_learned_patterns(self) -> Dict[str, Any]:
+        """Export learned patterns for analysis or transfer to other agents."""
+        return {
+            'successful_patterns': self.conversation_context.get('successful_patterns', []),
+            'failed_patterns': self.conversation_context.get('failed_patterns', []),
+            'user_preferences': self.conversation_context.get('user_preferences', {}),
+            'export_timestamp': time.time(),
+            'agent_id': self.agent_id,
+            'agent_specialty': self.specialty
+        }
