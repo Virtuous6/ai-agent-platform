@@ -15,6 +15,12 @@ from typing import Optional
 # Fix tokenizers parallelism warning
 os.environ.setdefault("TOKENIZERS_PARALLELISM", "false")
 
+# Suppress FAISS/NumPy deprecation warnings
+import warnings
+warnings.filterwarnings("ignore", category=DeprecationWarning, module="faiss")
+warnings.filterwarnings("ignore", message=".*numpy.core._multiarray_umath.*")
+warnings.filterwarnings("ignore", message=".*builtin type.*has no __module__ attribute.*")
+
 # Configure logging
 logging.basicConfig(
     level=logging.INFO,

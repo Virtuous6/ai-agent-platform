@@ -122,10 +122,14 @@ class SlackBot:
             except:
                 pass  # Ignore if can't show typing
             
+            # Get or create conversation record in Supabase
+            conversation_id = await self._get_or_create_conversation(user_id, channel_id, ts)
+            
             # Build context
             context = {
                 "user_id": user_id,
                 "channel_id": channel_id,
+                "conversation_id": conversation_id,
                 "is_mention": is_mention,
                 "thread_ts": ts,
                 "slack_client": client
@@ -140,7 +144,7 @@ class SlackBot:
             await say(response, thread_ts=ts if is_mention else None)
             
             # Log interaction
-            await self._log_interaction(user_id, channel_id, text, response, processing_time)
+            await self._log_interaction(conversation_id, user_id, channel_id, text, response, processing_time)
             
         except Exception as e:
             logger.error(f"Error handling message: {e}")
@@ -156,10 +160,14 @@ class SlackBot:
             # Build command message
             message = f"/{command_type} {text}".strip()
             
+            # Get or create conversation record in Supabase  
+            conversation_id = await self._get_or_create_conversation(user_id, channel_id, None)
+            
             # Build context
             context = {
                 "user_id": user_id,
                 "channel_id": channel_id,
+                "conversation_id": conversation_id,
                 "is_command": True,
                 "command_type": command_type,
                 "slack_client": client
@@ -175,7 +183,84 @@ class SlackBot:
             logger.error(f"Error handling command {command_type}: {e}")
             await say(f"Sorry, I encountered an error processing that command: {str(e)}")
     
-    async def _log_interaction(self, user_id: str, channel_id: str, 
+    async def _get_or_create_conversation(self, user_id: str, channel_id: str, thread_ts: str = None) -> str:
+        """
+        Get or create a conversation record in Supabase.
+        
+        Args:
+            user_id: Slack user ID
+            channel_id: Slack channel ID  
+            thread_ts: Thread timestamp (optional)
+            
+        Returns:
+            Conversation ID
+        """
+        import uuid
+        
+        try:
+            # Generate a consistent conversation ID based on user and channel
+            if thread_ts:
+                # Thread conversations get unique IDs
+                conversation_key = f"{user_id}_{channel_id}_{thread_ts}"
+            else:
+                # DMs and channel conversations use user+channel
+                conversation_key = f"{user_id}_{channel_id}"
+            
+            # Check if conversation exists
+            if conversation_key in self.active_conversations:
+                return self.active_conversations[conversation_key]
+            
+            # Check database for existing conversation
+            if self.storage:
+                try:
+                    result = self.storage.client.table("conversations")\
+                        .select("id")\
+                        .eq("user_id", user_id)\
+                        .eq("channel_id", channel_id)\
+                        .order("created_at", desc=True)\
+                        .limit(1)\
+                        .execute()
+                    
+                    if result.data:
+                        conversation_id = result.data[0]["id"]
+                        self.active_conversations[conversation_key] = conversation_id
+                        return conversation_id
+                except Exception as e:
+                    logger.warning(f"Failed to check existing conversations: {e}")
+            
+            # Create new conversation
+            conversation_id = str(uuid.uuid4())
+            
+            if self.storage:
+                try:
+                    conversation_data = {
+                        "id": conversation_id,
+                        "user_id": user_id,
+                        "channel_id": channel_id,
+                        "status": "active",
+                        "started_at": datetime.utcnow().isoformat(),
+                        "last_activity": datetime.utcnow().isoformat(),
+                        "thread_ts": thread_ts
+                        # Removed 'platform' field - not in database schema
+                    }
+                    
+                    self.storage.client.table("conversations").insert(conversation_data).execute()
+                    logger.info(f"✅ Created conversation: {conversation_id}")
+                    
+                except Exception as e:
+                    logger.error(f"Failed to create conversation: {e}")
+                    # Continue with generated ID even if database insert fails
+            
+            # Cache the conversation ID
+            self.active_conversations[conversation_key] = conversation_id
+            return conversation_id
+            
+        except Exception as e:
+            logger.error(f"Error getting/creating conversation: {e}")
+            # Fallback to generating a UUID
+            return str(uuid.uuid4())
+    
+    async def _log_interaction(self, conversation_id: str, user_id: str, channel_id: str, 
                               message: str, response: str, processing_time_ms: float):
         """Log interaction to Supabase."""
         if not self.storage:
@@ -183,16 +268,14 @@ class SlackBot:
         
         try:
             interaction_data = {
+                "conversation_id": conversation_id,
                 "user_id": user_id,
                 "channel_id": channel_id,
                 "content": message,
                 "agent_response": {"response": response, "platform": "slack"},
                 "processing_time_ms": processing_time_ms,
                 "timestamp": datetime.utcnow().isoformat(),
-                "topic": "slack_interaction",
-                "extension": "slack",
                 "message_type": "user_message",
-                "private": False,
                 "agent_type": "general"
             }
             

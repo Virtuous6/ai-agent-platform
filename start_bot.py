@@ -11,6 +11,15 @@ import logging
 import signal
 from pathlib import Path
 
+# Set this early to prevent tokenizers warnings
+os.environ['TOKENIZERS_PARALLELISM'] = 'false'
+
+# Suppress FAISS/NumPy deprecation warnings
+import warnings
+warnings.filterwarnings("ignore", category=DeprecationWarning, module="faiss")
+warnings.filterwarnings("ignore", message=".*numpy.core._multiarray_umath.*")
+warnings.filterwarnings("ignore", message=".*builtin type.*has no __module__ attribute.*")
+
 # Setup logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)

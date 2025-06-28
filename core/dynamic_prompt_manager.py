@@ -102,16 +102,21 @@ class DynamicPromptManager:
             
             if result.data and len(result.data) > 0:
                 prompt_data = result.data[0]
+                
+                # Handle database field names (function returns 'id' not 'template_id')
+                template_id = prompt_data.get('id') or prompt_data.get('template_id') or 'fallback'
+                system_prompt = prompt_data.get('system_prompt', f"You are a {specialty or 'general'} specialist.")
+                
                 prompt_template = PromptTemplate(
-                    template_id=prompt_data['template_id'],
+                    template_id=str(template_id),
                     agent_type=agent_type,
                     specialty=specialty,
                     complexity_level=complexity_level,
-                    system_prompt=prompt_data['system_prompt'],
-                    tool_decision_guidance=prompt_data['tool_decision_guidance'] or "",
-                    communication_style=prompt_data['communication_style'] or "",
-                    tool_selection_criteria=prompt_data['tool_selection_criteria'] or "",
-                    performance_score=float(prompt_data['performance_score'] or 0.5),
+                    system_prompt=system_prompt,
+                    tool_decision_guidance=prompt_data.get('tool_decision_guidance', '') or "",
+                    communication_style=prompt_data.get('communication_style', '') or "Be clear, helpful, and professional.",
+                    tool_selection_criteria=prompt_data.get('tool_selection_criteria', '') or "Use tools that directly help solve the user's request.",
+                    performance_score=float(prompt_data.get('performance_score', 0.5) or 0.5),
                     usage_count=0,  # Will be updated separately
                     test_group=test_group,
                     created_at=datetime.utcnow()

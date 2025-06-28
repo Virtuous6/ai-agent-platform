@@ -569,13 +569,22 @@ Provide improvement analysis for the {self.specialty} specialist:"""
             
             # Log to Supabase
             conversation_id = context.get("conversation_id")
-            message_id = await self._log_to_supabase(
-                conversation_id, message, response, context, 
-                tokens_used, input_tokens, output_tokens, cost, processing_time_ms
-            )
-            
-            # Store in memory
-            await self._store_memory(conversation_id, message_id, message, response, context)
+            if not conversation_id:
+                logger.warning(f"🚨 Agent {self.agent_id} received NO conversation_id in context from user {context.get('user_id', 'unknown')}")
+                logger.debug(f"Context keys available: {list(context.keys())}")
+                logger.warning(f"🚨 SKIPPING Supabase logging and memory storage - no conversation_id provided")
+                # Don't log or store memory without conversation_id to prevent false warnings
+                message_id = ""
+            else:
+                logger.debug(f"✅ Agent {self.agent_id} using conversation_id: {conversation_id}")
+                
+                message_id = await self._log_to_supabase(
+                    conversation_id, message, response, context, 
+                    tokens_used, input_tokens, output_tokens, cost, processing_time_ms
+                )
+                
+                # Store in memory only when we have a valid conversation_id
+                await self._store_memory(conversation_id, message_id, message, response, context)
             
             # Publish events
             await self._publish_events(run_id, message, response, context, processing_time_ms)
@@ -977,7 +986,7 @@ I'll notify you when I need your input to complete the tool. This is how I conti
                     any(word in message_lower for word in ['integrate', 'optimize', 'analyze', 'implement', 'compare', 'complex']),
                     len(message.split()) > 40,  # Many words
                     any(word in message_lower for word in ['architecture', 'system', 'algorithm', 'framework', 'strategy']),
-                    context.get('conversation_history', []) and len(context['conversation_history']) > 5  # Long conversation
+                    len(context.get('conversation_history', [])) > 5  # Long conversation - fixed to return boolean
                 ]
             }
             
@@ -1336,12 +1345,13 @@ I'll notify you when I need your input to complete the tool. This is how I conti
                              context: Dict[str, Any], tokens_used: int, input_tokens: int,
                              output_tokens: int, cost: float, processing_time_ms: float) -> str:
         """Log interaction to Supabase database."""
-        if not self.supabase_logger:
+        if not self.supabase_logger or not conversation_id:
+            logger.warning(f"Skipping Supabase logging - no logger or conversation_id")
             return ""
         
         try:
             message_id = await self.supabase_logger.log_message(
-                conversation_id=conversation_id or str(uuid.uuid4()),
+                conversation_id=conversation_id,
                 user_id=context.get("user_id", "unknown"),
                 content=message,
                 message_type="user_message",
@@ -1363,7 +1373,8 @@ I'll notify you when I need your input to complete the tool. This is how I conti
     async def _store_memory(self, conversation_id: str, message_id: str, 
                           message: str, response: str, context: Dict[str, Any]):
         """Store interaction in vector memory with circuit breaker."""
-        if not self.vector_store:
+        if not self.vector_store or not conversation_id:
+            logger.warning(f"Skipping memory storage - no vector store or conversation_id")
             return
         
         # Circuit breaker for memory storage
@@ -1377,7 +1388,7 @@ I'll notify you when I need your input to complete the tool. This is how I conti
         try:
             # Store user message
             await self.vector_store.store_conversation_memory(
-                conversation_id=conversation_id or str(uuid.uuid4()),
+                conversation_id=conversation_id,
                 message_id=message_id or str(uuid.uuid4()),
                 content=message,
                 user_id=context.get("user_id", "unknown"),
@@ -1390,7 +1401,7 @@ I'll notify you when I need your input to complete the tool. This is how I conti
             
             # Store agent response
             await self.vector_store.store_conversation_memory(
-                conversation_id=conversation_id or str(uuid.uuid4()),
+                conversation_id=conversation_id,
                 message_id=str(uuid.uuid4()),
                 content=response,
                 user_id=context.get("user_id", "unknown"),
@@ -1491,12 +1502,26 @@ I'll notify you when I need your input to complete the tool. This is how I conti
     
     async def persist_learning(self, pattern_type: str, pattern_data: Dict):
         """Persist learned patterns to vector store for all agents to access."""
-        if self.vector_store:
+        if self.vector_store and self.supabase_logger:
             try:
-                # Store learned pattern using correct vector store method
+                # Create system learning conversation ID  
                 conversation_id = f"learning_{pattern_type}_{datetime.utcnow().timestamp()}"
                 message_id = str(uuid.uuid4())
                 
+                # First, create the conversation record to prevent memory warnings
+                if hasattr(self.supabase_logger, 'client'):
+                    try:
+                        self.supabase_logger.client.table("conversations").insert({
+                            "id": conversation_id,
+                            "user_id": "system",
+                            "channel_id": "system_learning",
+                            "status": "active"
+                        }).execute()
+                    except Exception as e:
+                        # Conversation might already exist, that's fine
+                        logger.debug(f"System conversation already exists: {e}")
+                
+                # Now store the learning pattern
                 await self.vector_store.store_conversation_memory(
                     conversation_id=conversation_id,
                     message_id=message_id,
@@ -1578,6 +1603,9 @@ I'll notify you when I need your input to complete the tool. This is how I conti
                 'tokens_used': recent.get('tokens_used', 0),
                 'success': recent.get('cost', 0) > 0  # Simple success indicator
             }
+            # Ensure conversation_flow exists (defensive programming)
+            if 'conversation_flow' not in self._working_memory:
+                self._working_memory['conversation_flow'] = []
             self._working_memory['conversation_flow'].append(flow_entry)
         
         # Compress memory to fit token budget
@@ -1600,6 +1628,10 @@ I'll notify you when I need your input to complete the tool. This is how I conti
         max_working_memory_tokens = self.token_management['max_working_memory_tokens']
         
         # Keep only essential recent data
+        # Ensure conversation_flow exists (defensive programming)
+        if 'conversation_flow' not in self._working_memory:
+            self._working_memory['conversation_flow'] = []
+            
         compressed = {
             'last_task': self._working_memory.get('last_task', '')[:200],  # Limit to 50 tokens
             'recent_patterns_count': len(self._working_memory.get('learned_approaches', {})),

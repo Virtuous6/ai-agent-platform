@@ -155,7 +155,11 @@ def _check_sentence_transformers():
 def _check_faiss():
     """Check if faiss is available."""
     try:
-        import faiss
+        # Suppress FAISS/NumPy deprecation warnings
+        import warnings
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", DeprecationWarning)
+            import faiss
         return True
     except ImportError:
         return False

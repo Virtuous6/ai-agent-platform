@@ -22,8 +22,12 @@ except ImportError:
     SentenceTransformer = None
 
 try:
-    import faiss
-    import numpy as np
+    # Suppress FAISS/NumPy deprecation warnings
+    import warnings
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore", DeprecationWarning)
+        import faiss
+        import numpy as np
     FAISS_AVAILABLE = True
 except ImportError:
     FAISS_AVAILABLE = False
@@ -334,13 +338,26 @@ class VectorMemoryStore:
             conversation_id = sanitize_uuid(conversation_id)
             message_id = sanitize_uuid(message_id)
             
-            # ✅ CHECK IF CONVERSATION EXISTS - PREVENT FOREIGN KEY VIOLATIONS
-            try:
-                conversation_check = self.supabase_logger.client.table("conversations").select("id").eq("id", conversation_id).execute()
-                
-                if not conversation_check.data:
-                    logger.warning(f"Conversation {conversation_id} not found - creating minimal record")
-                    # Create a minimal conversation record to satisfy foreign key constraint
+            # ✅ CHECK IF CONVERSATION EXISTS WITH RETRY - HANDLE RACE CONDITIONS
+            max_retries = 3
+            retry_delay = 0.5  # 500ms
+            
+            for attempt in range(max_retries):
+                try:
+                    conversation_check = self.supabase_logger.client.table("conversations").select("id").eq("id", conversation_id).execute()
+                    
+                    if conversation_check.data:
+                        # Conversation exists, proceed with memory storage
+                        break
+                    
+                    if attempt < max_retries - 1:
+                        # Wait before retry - conversation might still be committing
+                        logger.debug(f"Conversation {conversation_id} not found, retrying in {retry_delay}s (attempt {attempt + 1}/{max_retries})")
+                        await asyncio.sleep(retry_delay)
+                        continue
+                    
+                    # Final attempt - create minimal record if still not found
+                    logger.warning(f"Conversation {conversation_id} not found after {max_retries} attempts - creating minimal record")
                     conversation_data = {
                         "id": conversation_id,
                         "user_id": user_id,
@@ -351,13 +368,19 @@ class VectorMemoryStore:
                         self.supabase_logger.client.table("conversations").insert(conversation_data).execute()
                         logger.info(f"✅ Created minimal conversation record: {conversation_id}")
                     except Exception as conv_e:
-                        logger.error(f"Failed to create conversation record: {conv_e}")
-                        # Skip storing this embedding to prevent foreign key violation
-                        return False
+                        # Check if conversation was created by another process (race condition)
+                        logger.debug(f"Insert failed, checking if conversation exists now: {conv_e}")
+                        recheck = self.supabase_logger.client.table("conversations").select("id").eq("id", conversation_id).execute()
+                        if not recheck.data:
+                            logger.error(f"Failed to create conversation record: {conv_e}")
+                            return False
+                        logger.info(f"✅ Conversation {conversation_id} created by another process")
                         
-            except Exception as check_e:
-                logger.error(f"Failed to check conversation existence: {check_e}")
-                return False
+                except Exception as check_e:
+                    logger.error(f"Failed to check conversation existence (attempt {attempt + 1}): {check_e}")
+                    if attempt == max_retries - 1:
+                        return False
+                    await asyncio.sleep(retry_delay)
             
             # Extract channel_id from metadata if available
             channel_id = None
