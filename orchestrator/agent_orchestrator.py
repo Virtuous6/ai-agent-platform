@@ -28,6 +28,14 @@ from pydantic import BaseModel, Field
 if TYPE_CHECKING:
     from agents.general.general_agent import GeneralAgent
 
+# Import the QueryComplexityRouter for intelligent routing
+from .query_complexity_router import (
+    QueryComplexityRouter, 
+    ComplexityLevel, 
+    ResponseStrategy,
+    ComplexityAnalysis
+)
+
 logger = logging.getLogger(__name__)
 
 class IntentClassification(BaseModel):
@@ -182,13 +190,23 @@ class AgentOrchestrator:
         self.intent_parser = JsonOutputParser(pydantic_object=IntentClassification)
         self.intent_chain = self.intent_prompt | self.intent_llm | self.intent_parser
         
+        # Initialize Query Complexity Router for intelligent routing
+        self.complexity_router = QueryComplexityRouter(
+            llm=ChatOpenAI(
+                model="gpt-3.5-turbo-0125",
+                temperature=0.2,  # Low temperature for consistent assessment
+                openai_api_key=os.getenv("OPENAI_API_KEY"),
+                max_tokens=300
+            )
+        )
+        
         # Start cleanup task
         self._start_cleanup_task()
         
         # Initialize improvement orchestrator after everything else is set up
         self._initialize_improvement_orchestrator()
         
-        logger.info("Agent Orchestrator initialized with self-improvement capabilities")
+        logger.info("Agent Orchestrator initialized with self-improvement capabilities and complexity routing")
 
     def _initialize_improvement_orchestrator(self):
         """Initialize the Improvement Orchestrator for continuous self-improvement."""
@@ -715,7 +733,13 @@ Respond with JSON only.
     
     async def route_request(self, message: str, context: Dict[str, Any]) -> Dict[str, Any]:
         """
-        Route a user request to the most appropriate agent.
+        Route a user request using complexity-aware intelligent routing.
+        
+        This enhanced routing system:
+        1. Assesses query complexity to determine response strategy
+        2. Routes simple queries to direct agent responses
+        3. Routes medium queries to agents with MCP tools
+        4. Routes complex queries to goal-oriented workflows
         
         Args:
             message: User message content
@@ -728,76 +752,359 @@ Respond with JSON only.
         run_id = None
         if self.workflow_tracker:
             run_id = await self.workflow_tracker.start_workflow(
-                workflow_type="agent_routing",
+                workflow_type="complexity_aware_routing",
                 user_id=context.get("user_id", "unknown"),
                 trigger_message=message,
-                conversation_id=context.get("conversation_id")
+                conversation_id=context.get("conversation_id"),
+                goal_id=context.get("goal_id"),
+                parent_goal_id=context.get("parent_goal_id")
             )
         
         try:
-            logger.info(f"Routing request: '{message[:50]}...'")
+            logger.info(f"Routing request with complexity assessment: '{message[:50]}...'")
             
-            # Check for explicit agent mentions first
+            # Step 1: Assess query complexity for intelligent routing
+            complexity_analysis = await self.complexity_router.assess_complexity(message, context)
+            
+            logger.info(f"Complexity assessment: {complexity_analysis.level.value} "
+                       f"({complexity_analysis.score:.2f}) - {complexity_analysis.strategy.value}")
+            
+            # Step 2: Check for explicit agent mentions (overrides complexity)
             explicit_agent = self._check_explicit_mentions(message)
             if explicit_agent:
-                logger.info(f"Explicit agent mention detected: {explicit_agent.value}")
+                logger.info(f"Explicit agent mention detected: {explicit_agent.value} "
+                           f"(overriding complexity-based routing)")
                 result = await self._route_to_agent(explicit_agent, message, context, confidence=1.0)
                 
-                # Complete workflow tracking
+                # Complete workflow tracking with complexity metadata
                 if run_id and self.workflow_tracker:
                     await self.workflow_tracker.track_agent_used(run_id, explicit_agent.value)
                     await self.workflow_tracker.complete_workflow(
                         run_id=run_id,
-                        success=True,
-                        response=result.get("response", ""),
-                        tokens_used=result.get("tokens_used", 0),
-                        estimated_cost=result.get("processing_cost", 0.0),
-                        confidence_score=1.0,
-                        pattern_signature=f"explicit_{explicit_agent.value}",
-                        automation_potential=0.9
+                        result={
+                            "success": True,
+                            "response": result.get("response", ""),
+                            "tokens_used": result.get("tokens_used", 0),
+                            "estimated_cost": result.get("processing_cost", 0.0),
+                            "confidence_score": 1.0,
+                            "pattern_signature": f"explicit_{explicit_agent.value}",
+                            "automation_potential": 0.9,
+                            "metadata": {
+                                "complexity_score": complexity_analysis.score,
+                                "complexity_level": complexity_analysis.level.value,
+                                "routing_strategy": "explicit_override",
+                                "complexity_indicators": complexity_analysis.indicators
+                            }
+                        }
                     )
                 
                 return result
             
-            # Perform LLM-based intent classification
-            classification = await self._classify_intent_with_llm(message, context)
+            # Step 3: Route based on complexity analysis
+            if complexity_analysis.strategy == ResponseStrategy.DIRECT_RESPONSE:
+                # Simple query - direct agent response
+                result = await self._handle_simple_query(message, context, complexity_analysis)
+                
+            elif complexity_analysis.strategy == ResponseStrategy.AGENT_WITH_TOOLS:
+                # Medium query - agent with MCP tools
+                result = await self._handle_medium_query(message, context, complexity_analysis)
+                
+            elif complexity_analysis.strategy == ResponseStrategy.GOAL_WORKFLOW:
+                # Complex query - goal-oriented workflow
+                result = await self._handle_complex_query(message, context, complexity_analysis)
             
-            # Convert to agent type and validate
-            selected_agent, confidence = self._process_llm_classification(classification)
+            else:
+                # Fallback to standard routing
+                logger.warning(f"Unknown strategy {complexity_analysis.strategy}, falling back to standard routing")
+                result = await self._handle_fallback_routing(message, context, complexity_analysis)
             
-            logger.info(f"Selected agent: {selected_agent.value} (confidence: {confidence:.2f})")
-            
-            # Route to the selected agent
-            result = await self._route_to_agent(selected_agent, message, context, confidence)
-            
-            # Complete workflow tracking
+            # Complete workflow tracking with full complexity metadata
             if run_id and self.workflow_tracker:
-                await self.workflow_tracker.track_agent_used(run_id, selected_agent.value)
                 await self.workflow_tracker.complete_workflow(
                     run_id=run_id,
-                    success=True,
-                    response=result.get("response", ""),
-                    tokens_used=result.get("tokens_used", 0),
-                    estimated_cost=result.get("processing_cost", 0.0),
-                    confidence_score=confidence,
-                    pattern_signature=f"auto_{selected_agent.value}_{int(confidence*10)}",
-                    automation_potential=0.7 if confidence > 0.8 else 0.3
+                    result={
+                        "success": result.get("success", True),
+                        "response": result.get("response", ""),
+                        "tokens_used": result.get("tokens_used", 0),
+                        "estimated_cost": result.get("processing_cost", complexity_analysis.estimated_cost),
+                        "confidence_score": result.get("confidence", 0.8),
+                        "pattern_signature": f"complexity_{complexity_analysis.level.value}_{int(complexity_analysis.score*10)}",
+                        "automation_potential": 0.9 if complexity_analysis.level == ComplexityLevel.SIMPLE else 0.6,
+                        "metadata": {
+                            "complexity_score": complexity_analysis.score,
+                            "complexity_level": complexity_analysis.level.value,
+                            "routing_strategy": complexity_analysis.strategy.value,
+                            "complexity_indicators": complexity_analysis.indicators,
+                            "estimated_steps": complexity_analysis.estimated_steps,
+                            "requires_tools": complexity_analysis.requires_tools,
+                            "requires_multiple_agents": complexity_analysis.requires_multiple_agents
+                        }
+                    }
                 )
             
             return result
             
         except Exception as e:
-            logger.error(f"Error in routing: {str(e)}")
+            logger.error(f"Error in complexity-aware routing: {str(e)}")
             
             # Track failure
             if run_id and self.workflow_tracker:
                 await self.workflow_tracker.fail_workflow(
                     run_id=run_id,
-                    error_message=str(e)
+                    error_message=str(e),
+                    error_details={"routing_stage": "complexity_assessment"}
                 )
             
             # Fallback to general agent on error
             return await self._route_to_agent(AgentType.GENERAL, message, context, confidence=0.0, error=str(e))
+    
+    async def _handle_simple_query(self, message: str, context: Dict[str, Any], 
+                                 complexity_analysis: ComplexityAnalysis) -> Dict[str, Any]:
+        """
+        Handle simple queries with direct agent response.
+        
+        Simple queries get routed to the most appropriate agent for a direct answer
+        without additional tool usage or multi-agent coordination.
+        """
+        logger.info(f"Handling simple query: {complexity_analysis.reasoning}")
+        
+        # Use standard intent classification for simple queries
+        classification = await self._classify_intent_with_llm(message, context)
+        selected_agent, confidence = self._process_llm_classification(classification)
+        
+        # Track the agent used
+        if hasattr(self, 'workflow_tracker') and self.workflow_tracker:
+            for run_id in self.workflow_tracker.active_runs:
+                await self.workflow_tracker.track_agent_used(run_id, selected_agent.value)
+        
+        # Route to the selected agent
+        result = await self._route_to_agent(selected_agent, message, context, confidence)
+        
+        # Add complexity metadata
+        if isinstance(result, dict):
+            result["complexity_routing"] = {
+                "strategy": "direct_response",
+                "complexity_score": complexity_analysis.score,
+                "estimated_steps": complexity_analysis.estimated_steps
+            }
+        
+        return result
+    
+    async def _handle_medium_query(self, message: str, context: Dict[str, Any],
+                                 complexity_analysis: ComplexityAnalysis) -> Dict[str, Any]:
+        """
+        Handle medium complexity queries with agent + MCP tools.
+        
+        Medium queries require analysis, research, or tool usage but remain single-focus.
+        These get enhanced with MCP tool discovery and usage.
+        """
+        logger.info(f"Handling medium query with tools: {complexity_analysis.reasoning}")
+        
+        # Use intent classification but prepare for tool usage
+        classification = await self._classify_intent_with_llm(message, context)
+        selected_agent, confidence = self._process_llm_classification(classification)
+        
+        # Enhance context with tool requirement
+        enhanced_context = context.copy()
+        enhanced_context["requires_tools"] = True
+        enhanced_context["complexity_indicators"] = complexity_analysis.indicators
+        enhanced_context["estimated_steps"] = complexity_analysis.estimated_steps
+        
+        # Track the agent used
+        if hasattr(self, 'workflow_tracker') and self.workflow_tracker:
+            for run_id in self.workflow_tracker.active_runs:
+                await self.workflow_tracker.track_agent_used(run_id, selected_agent.value)
+        
+        # Route to the selected agent with enhanced context
+        result = await self._route_to_agent(selected_agent, message, enhanced_context, confidence)
+        
+        # Add complexity metadata
+        if isinstance(result, dict):
+            result["complexity_routing"] = {
+                "strategy": "agent_with_tools",
+                "complexity_score": complexity_analysis.score,
+                "estimated_steps": complexity_analysis.estimated_steps,
+                "tools_enabled": True
+            }
+        
+        return result
+    
+    async def _handle_complex_query(self, message: str, context: Dict[str, Any],
+                                  complexity_analysis: ComplexityAnalysis) -> Dict[str, Any]:
+        """
+        Handle complex queries with goal-oriented workflow.
+        
+        Complex queries require multi-step coordination, multiple agents, or
+        workflow orchestration. These trigger goal creation and coordinated execution.
+        """
+        logger.info(f"Handling complex query with goal workflow: {complexity_analysis.reasoning}")
+        
+        try:
+            # Check if we already have a goal context
+            if context.get("goal_id"):
+                logger.info(f"Complex query is part of existing goal: {context.get('goal_id')}")
+                return await self._handle_goal_sub_query(message, context, complexity_analysis)
+            
+            # Try to use LangGraph workflow if available
+            if hasattr(self, '_workflow_engine') or hasattr(self, 'process_with_langgraph'):
+                logger.info("Attempting LangGraph workflow for complex query")
+                try:
+                    return await self.process_with_langgraph(message, context)
+                except Exception as e:
+                    logger.warning(f"LangGraph workflow failed, falling back to goal creation: {e}")
+            
+            # Create a new goal for the complex query
+            goal_id = await self._create_goal_for_complex_query(message, context, complexity_analysis)
+            
+            if goal_id:
+                logger.info(f"Created goal {goal_id} for complex query")
+                
+                # Update context with goal information
+                goal_context = context.copy()
+                goal_context["goal_id"] = goal_id
+                goal_context["complexity_analysis"] = complexity_analysis
+                
+                # Route to goal-aware agent processing
+                return await self._execute_goal_workflow(message, goal_context, complexity_analysis)
+            else:
+                # Fallback to enhanced agent routing if goal creation fails
+                logger.warning("Goal creation failed, falling back to enhanced agent routing")
+                return await self._handle_fallback_routing(message, context, complexity_analysis)
+            
+        except Exception as e:
+            logger.error(f"Error handling complex query: {e}")
+            return await self._handle_fallback_routing(message, context, complexity_analysis)
+    
+    async def _handle_fallback_routing(self, message: str, context: Dict[str, Any],
+                                     complexity_analysis: ComplexityAnalysis) -> Dict[str, Any]:
+        """
+        Fallback routing when complexity-based routing fails.
+        
+        Falls back to the original intent classification system.
+        """
+        logger.info("Using fallback routing with intent classification")
+        
+        # Use standard intent classification
+        classification = await self._classify_intent_with_llm(message, context)
+        selected_agent, confidence = self._process_llm_classification(classification)
+        
+        # Track the agent used
+        if hasattr(self, 'workflow_tracker') and self.workflow_tracker:
+            for run_id in self.workflow_tracker.active_runs:
+                await self.workflow_tracker.track_agent_used(run_id, selected_agent.value)
+        
+        # Route to the selected agent
+        result = await self._route_to_agent(selected_agent, message, context, confidence)
+        
+        # Add fallback metadata
+        if isinstance(result, dict):
+            result["complexity_routing"] = {
+                "strategy": "fallback_routing",
+                "complexity_score": complexity_analysis.score,
+                "original_strategy": complexity_analysis.strategy.value,
+                "fallback_reason": "complexity_routing_failed"
+            }
+        
+        return result
+    
+    async def _create_goal_for_complex_query(self, message: str, context: Dict[str, Any],
+                                           complexity_analysis: ComplexityAnalysis) -> Optional[str]:
+        """
+        Create a goal for a complex query that requires multi-agent coordination.
+        
+        Returns:
+            Goal ID if successful, None if goal creation fails
+        """
+        try:
+            # Try to import and use the goal manager
+            from core.goal_manager import GoalManager
+            
+            goal_manager = GoalManager()
+            
+            # Create goal based on complexity analysis
+            goal_data = {
+                "title": f"Complex Query: {message[:50]}...",
+                "description": message,
+                "user_id": context.get("user_id", "unknown"),
+                "complexity_score": complexity_analysis.score,
+                "estimated_steps": complexity_analysis.estimated_steps,
+                "requires_multiple_agents": complexity_analysis.requires_multiple_agents,
+                "complexity_indicators": complexity_analysis.indicators
+            }
+            
+            goal_id = await goal_manager.create_goal(goal_data)
+            logger.info(f"Created goal {goal_id} for complex query")
+            return goal_id
+            
+        except ImportError:
+            logger.warning("GoalManager not available, cannot create goal for complex query")
+            return None
+        except Exception as e:
+            logger.error(f"Failed to create goal for complex query: {e}")
+            return None
+    
+    async def _handle_goal_sub_query(self, message: str, context: Dict[str, Any],
+                                   complexity_analysis: ComplexityAnalysis) -> Dict[str, Any]:
+        """Handle a query that's part of an existing goal."""
+        logger.info(f"Processing sub-query for goal {context.get('goal_id')}")
+        
+        # Use enhanced routing for goal sub-queries
+        classification = await self._classify_intent_with_llm(message, context)
+        selected_agent, confidence = self._process_llm_classification(classification)
+        
+        # Track the agent used
+        if hasattr(self, 'workflow_tracker') and self.workflow_tracker:
+            for run_id in self.workflow_tracker.active_runs:
+                await self.workflow_tracker.track_agent_used(run_id, selected_agent.value)
+        
+        # Route with goal context
+        result = await self._route_to_agent(selected_agent, message, context, confidence)
+        
+        # Add goal metadata
+        if isinstance(result, dict):
+            result["complexity_routing"] = {
+                "strategy": "goal_sub_query",
+                "goal_id": context.get("goal_id"),
+                "complexity_score": complexity_analysis.score
+            }
+        
+        return result
+    
+    async def _execute_goal_workflow(self, message: str, context: Dict[str, Any],
+                                   complexity_analysis: ComplexityAnalysis) -> Dict[str, Any]:
+        """Execute a goal-oriented workflow for complex queries."""
+        logger.info(f"Executing goal workflow for goal {context.get('goal_id')}")
+        
+        try:
+            # Try to use LangGraph workflow if available
+            if hasattr(self, 'process_with_langgraph'):
+                return await self.process_with_langgraph(message, context)
+            
+            # Fallback to enhanced agent routing with goal context
+            classification = await self._classify_intent_with_llm(message, context)
+            selected_agent, confidence = self._process_llm_classification(classification)
+            
+            # Track the agent used
+            if hasattr(self, 'workflow_tracker') and self.workflow_tracker:
+                for run_id in self.workflow_tracker.active_runs:
+                    await self.workflow_tracker.track_agent_used(run_id, selected_agent.value)
+            
+            result = await self._route_to_agent(selected_agent, message, context, confidence)
+            
+            # Add goal workflow metadata
+            if isinstance(result, dict):
+                result["complexity_routing"] = {
+                    "strategy": "goal_workflow",
+                    "goal_id": context.get("goal_id"),
+                    "complexity_score": complexity_analysis.score,
+                    "workflow_type": "agent_based"
+                }
+            
+            return result
+            
+        except Exception as e:
+            logger.error(f"Error executing goal workflow: {e}")
+            return await self._handle_fallback_routing(message, context, complexity_analysis)
     
     def _check_explicit_mentions(self, message: str) -> Optional[AgentType]:
         """
@@ -1027,13 +1334,17 @@ Respond with JSON only.
     
     def get_routing_stats(self) -> Dict[str, Any]:
         """
-        Get statistics about routing decisions.
+        Get statistics about routing decisions including complexity assessment.
         
         Returns:
-            Dictionary with routing statistics
+            Dictionary with routing statistics and complexity analytics
         """
         if not self.request_history:
-            return {"total_requests": 0}
+            basic_stats = {"total_requests": 0}
+            # Add complexity stats even if no requests yet
+            if hasattr(self, 'complexity_router'):
+                basic_stats["complexity_assessment"] = self.complexity_router.get_assessment_stats()
+            return basic_stats
         
         agent_counts = {}
         total_confidence = 0
@@ -1043,12 +1354,47 @@ Respond with JSON only.
             agent_counts[agent] = agent_counts.get(agent, 0) + 1
             total_confidence += entry["confidence"]
         
-        return {
+        stats = {
             "total_requests": len(self.request_history),
             "agent_distribution": agent_counts,
             "average_confidence": total_confidence / len(self.request_history),
             "last_request": self.request_history[-1]["timestamp"]
         }
+        
+        # Add complexity assessment statistics
+        if hasattr(self, 'complexity_router'):
+            stats["complexity_assessment"] = self.complexity_router.get_assessment_stats()
+        
+        return stats
+    
+    async def assess_query_complexity(self, message: str, context: Dict[str, Any] = None) -> ComplexityAnalysis:
+        """
+        Public method to assess query complexity without routing.
+        
+        Useful for testing, analysis, or external complexity assessment.
+        
+        Args:
+            message: User query to assess
+            context: Optional context for assessment
+            
+        Returns:
+            ComplexityAnalysis with detailed assessment results
+        """
+        if hasattr(self, 'complexity_router'):
+            return await self.complexity_router.assess_complexity(message, context or {})
+        else:
+            # Fallback if complexity router not available
+            return ComplexityAnalysis(
+                score=0.5,
+                level=ComplexityLevel.MEDIUM,
+                strategy=ResponseStrategy.AGENT_WITH_TOOLS,
+                reasoning="Complexity router not available",
+                indicators=["fallback_assessment"],
+                estimated_steps=3,
+                requires_tools=True,
+                requires_multiple_agents=False,
+                estimated_cost=0.05
+            )
     
     async def process_with_langgraph(self, message: str, context: Dict[str, Any], 
                                runbook_name: Optional[str] = None) -> Dict[str, Any]:
@@ -1275,6 +1621,15 @@ Respond with JSON only.
                     logger.info("Closed LangGraph Workflow Engine")
                 except Exception as e:
                     logger.warning(f"Error closing workflow engine: {e}")
+            
+            # Close Query Complexity Router if available
+            if hasattr(self, 'complexity_router'):
+                try:
+                    # Note: QueryComplexityRouter doesn't need async cleanup,
+                    # but we log the cleanup for completeness
+                    logger.info("Closed Query Complexity Router")
+                except Exception as e:
+                    logger.warning(f"Error closing complexity router: {e}")
             
             # Close all available agents
             agents_to_close = [

@@ -1,0 +1,39 @@
+# AI Agent Platform Configuration
+
+# System Settings
+system:
+  name: "AI Agent Platform"
+  version: "2.0.0"
+  environment: "development"
+  
+# Agent Settings
+agents:
+  max_active: 50
+  cleanup_interval: 3600  # seconds
+  default_model: "gpt-3.5-turbo"
+  
+# Learning Settings
+learning:
+  pattern_threshold: 3  # minimum occurrences to consider a pattern
+  analysis_interval: 21600  # 6 hours in seconds
+  
+# Storage Settings
+storage:
+  type: "supabase"
+  
+# Platform Adapters
+adapters:
+  default: "slack"
+  available:
+    - "slack"
+    - "cli"
+    
+# Workflow Settings
+workflows:
+  max_parallel_steps: 5
+  default_timeout: 300  # seconds
+  
+# Logging Settings
+logging:
+  level: "INFO"
+  format: "%(asctime)s - %(name)s - %(levelname)s - %(message)s" 

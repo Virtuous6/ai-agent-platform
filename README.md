@@ -1,263 +1,275 @@
-# AI Agent Platform - LLM-Powered
+# AI Agent Platform 2.0 - Thin Engine + Supabase Storage
 
-An **intelligent, LLM-powered platform** that orchestrates specialized AI agents through Slack, using OpenAI's ChatGPT with domain-specific expertise and runbook-driven workflows for maximum flexibility and intelligence.
+A self-improving, multi-agent AI platform that learns from every interaction. **Your git repo becomes a thin, powerful engine while Supabase stores everything dynamic.**
 
-## 🧠 Overview
+## 🚀 Architecture: Thin Engine + Database Intelligence
 
-The AI Agent Platform is built around **LLM-powered intelligence** where each agent uses OpenAI's ChatGPT with specialized prompts to provide expert-level assistance. The platform combines the power of large language models with structured workflows, making it both intelligent and maintainable.
+**✅ NO MORE:** Config files, static workflows, deployments for changes  
+**✅ NOW:** Dynamic configs, database workflows, real-time updates
 
-### 🚀 Key Features
+- **Git Repo** = Lean execution engine (~200 line orchestrator)
+- **Supabase** = All intelligence, configs, patterns, and analytics
 
-- **🤖 LLM-Powered Agents**: ChatGPT-driven specialized agents with domain expertise
-- **💬 Slack-First Interface**: Natural conversation interface through Slack
-- **🧠 Intelligent Routing**: Smart request classification and agent selection
-- **📋 Runbook-Driven Logic**: YAML workflows that enhance LLM decision-making
-- **📚 Self-Documenting**: Every component includes README.llm.md for LLM understanding
-- **⚡ Async Architecture**: Built for high concurrency and performance
-- **📊 Comprehensive Analytics**: Full interaction tracking with LLM cost monitoring
+## 🚀 What's New in 2.0
 
-## 🏗️ LLM-Powered Architecture
+- **80% Less Code**: Removed over-engineering, kept the gold
+- **Thin Engine**: Your code is now a lean execution engine
+- **Supabase Storage**: All configs, patterns, and intelligence in database
+- **Zero Deployments**: Update agents, prompts, workflows via database
+- **Dynamic Agent Spawning**: Agents created on-demand from database configs
+- **True Multi-Agent**: Agents collaborate through events
+- **Self-Improving**: Every interaction tracked and analyzed in Supabase
+- **Real-time Updates**: Change anything without restarting
+
+## 📁 Architecture
 
 ```
-User → Slack Bot → Orchestrator → LLM-Powered Agents → MCP Tools → External Services
-                      ↓              ↓
-                 Runbook Engine → ChatGPT Integration
-                      ↓              ↓
-                 State Management ← LLM Analytics → Supabase Database
+ai-agent-platform/
+├── core/                    # Heart of the system
+│   ├── agent.py            # UniversalAgent - one class, infinite configs
+│   ├── orchestrator.py     # Simple 200-line orchestrator
+│   ├── events.py           # Perfect event bus (unchanged)
+│   └── workflow.py         # Multi-agent workflow engine
+│
+├── evolution/              # Self-improvement
+│   ├── tracker.py         # Tracks every workflow
+│   ├── learner.py         # Learns from patterns & feedback
+│   └── memory.py          # Vector store for context
+│
+├── tools/                  # MCP integrations
+│   ├── mcp_manager.py     # MCP connection management
+│   ├── registry.py        # Tool registry
+│   └── cards/             # MCP implementations
+│       ├── serper.py      # Web search
+│       ├── supabase.py    # Database
+│       └── github.py      # Code integration
+│
+├── adapters/              # Platform adapters
+│   ├── base.py           # Abstract adapter
+│   └── slack.py          # Slack integration
+│
+├── storage/               # Persistence
+│   ├── supabase.py       # Database logger
+│   └── configs/          # Agent configurations
+│       ├── general.yaml
+│       ├── technical.yaml
+│       └── research.yaml
+│
+├── main.py               # Clean entry point
+└── config.yaml          # System configuration
 ```
 
-### 🤖 Intelligent Agents
+## 🎯 Key Concepts
 
-#### General Agent 🤖
-**LLM-Powered Conversational Specialist**
-- **Intelligence**: ChatGPT with conversation prompts (temperature: 0.7)
-- **Capabilities**: Natural conversation, context awareness, intelligent escalation
-- **Features**: Conversation continuity, escalation assessment, Slack optimization
+### 1. Universal Agent
+Instead of multiple agent classes, we have ONE configurable agent:
+```python
+# Old way: Multiple classes
+class GeneralAgent: ...
+class TechnicalAgent: ...
+class ResearchAgent: ...
 
-#### Technical Agent 👨‍💻  
-**LLM-Powered Programming & Systems Expert**
-- **Intelligence**: ChatGPT with technical expertise prompts (temperature: 0.3)
-- **Capabilities**: Programming, debugging, infrastructure, code review
-- **Features**: 8 technical domains, user level adaptation, code examples
+# New way: One class, config-driven
+agent = UniversalAgent(config=load_config("technical"))
+```
 
-#### Research Agent 🔬
-**LLM-Powered Analysis & Research Specialist**
-- **Intelligence**: ChatGPT with research methodology prompts (temperature: 0.4)
-- **Capabilities**: Market research, competitive analysis, data insights
-- **Features**: 8 research types, methodology design, structured deliverables
+### 2. Dynamic Spawning
+Agents are created on-demand based on context:
+```python
+# Orchestrator automatically spawns the right agent
+response = await orchestrator.process("Debug this code", context)
+# ^ Spawns technical agent automatically
+```
 
-### 🧠 Intelligence Features
+### 3. Event-Driven Everything
+Agents communicate through events:
+```python
+# Agent publishes completion
+await event_bus.publish("task_completed", data)
 
-- **🎯 Domain Classification**: Automatic intelligent categorization of requests
-- **📈 Adaptive Responses**: User skill level detection and complexity assessment
-- **🔄 Context Continuity**: Conversation history integration across agent handoffs
-- **⚙️ Tool Integration**: Smart recommendations for external tool usage
-- **🛡️ Graceful Fallback**: Robust error handling with keyword-based backup
+# Other agents can subscribe and react
+await event_bus.subscribe("task_completed", handle_completion)
+```
+
+### 4. Continuous Learning
+Every interaction is analyzed:
+```python
+# Automatic pattern recognition
+run_id = track_workflow(message, context)
+asyncio.create_task(learner.analyze_interaction(run_id))
+```
 
 ## 🚀 Quick Start
 
-### Prerequisites
+### 1. Setup Environment
+```bash
+# Clone repo
+git clone https://github.com/yourusername/ai-agent-platform.git
+cd ai-agent-platform
 
-- Python 3.11+
-- Slack workspace with bot permissions
-- Supabase project
-- **OpenAI API key** (required for LLM-powered agents)
+# Create virtual environment
+python -m venv venv
+source venv/bin/activate  # On Windows: venv\Scripts\activate
 
-### Installation
-
-1. **Clone and setup virtual environment**:
-   ```bash
-   git clone <repository-url>
-   cd ai-agent-platform
-   
-   # Create and activate virtual environment
-   python3 -m venv venv
-   source venv/bin/activate  # On Windows: venv\Scripts\activate
-   
-   # Install dependencies
-   pip install -r requirements.txt
-   ```
-
-2. **Run setup script**:
-   ```bash
-   python setup.py
-   ```
-   This will:
-   - Create a `.env` file with auto-generated secrets
-   - Verify all dependencies are installed
-   - Show detailed Slack app setup instructions
-
-3. **Configure your credentials** (⚠️ **Required for LLM functionality**):
-   ```bash
-   # Edit the .env file with your credentials
-   OPENAI_API_KEY=sk-your-openai-key-here  # Required for LLM agents
-   SLACK_BOT_TOKEN=xoxb-your-slack-token
-   SUPABASE_URL=your-supabase-url
-   SUPABASE_KEY=your-supabase-key
-   ```
-
-4. **Run the LLM-powered bot**:
-   ```bash
-   python slack_interface/slack_bot.py
-   ```
-
-### 🤖 Agent Capabilities Demo
-
-Once running, test the intelligent agents:
-
-```
-# General conversation (General Agent)
-@botname Hello! How are you doing today?
-
-# Technical assistance (Technical Agent)  
-@botname Help me debug this Python error in my Flask application
-
-# Research requests (Research Agent)
-@botname Analyze the competitive landscape for our new AI product
+# Install dependencies
+pip install -r requirements.txt
 ```
 
-## 📊 LLM Analytics & Performance
+### 2. Configure Environment
+```bash
+# Copy example env
+cp config/env.example .env
 
-### 🔍 Token Tracking
-- **Real-time Monitoring**: Track OpenAI API usage per agent and interaction
-- **Cost Analysis**: Monitor LLM costs with detailed breakdowns
-- **Performance Metrics**: Response times, token efficiency, quality indicators
+# Edit .env with your keys
+OPENAI_API_KEY=your-key
+SUPABASE_URL=your-url
+SUPABASE_KEY=your-key
+SLACK_BOT_TOKEN=your-token  # Optional
+```
 
-### 📈 Intelligence Metrics
-- **Domain Classification Accuracy**: How well agents categorize requests
-- **Escalation Effectiveness**: Success rate of agent-to-agent handoffs
-- **User Adaptation**: Appropriateness of response complexity to user level
-- **Conversation Quality**: Context continuity and satisfaction indicators
+### 3. Run the Platform
 
-## 🏗️ Core Components
+**CLI Mode (for testing):**
+```bash
+python main.py cli
+```
 
-- **`slack_interface/`** - Slack bot with LLM response formatting
-- **`orchestrator/`** - Intelligent request routing with LLM-powered classification  
-- **`agents/`** - LLM-powered specialized agents (General, Technical, Research)
-- **`runbooks/`** - YAML workflows that enhance LLM decision-making
-- **`tools/`** - MCP (Model Context Protocol) tool implementations
-- **`state/`** - Conversation context with LLM interaction history
-- **`database/`** - Database integration with LLM analytics (Supabase)
+**Slack Mode:**
+```bash
+python main.py slack
+```
 
-## 🧠 LLM Configuration
+**Or just run (auto-detects mode):**
+```bash
+python main.py
+```
 
-### Model Selection Strategy
+## 💬 Using the Platform
+
+### Basic Commands
+- `/improve` - Improve your last workflow
+- `/save-workflow [name]` - Save current workflow  
+- `/list-workflows` - List your saved workflows
+- `/status` - Show system status
+- `/agents` - List active agents
+
+### Example Interactions
+
+**Simple Question:**
+```
+You: What is machine learning?
+Agent: Machine learning is a subset of AI that enables systems to learn and improve from experience without being explicitly programmed...
+```
+
+**Technical Task:**
+```
+You: Debug this Python code: def fib(n): return fib(n-1) + fib(n-2)
+Agent: I see the issue with your Fibonacci function. It's missing base cases...
+```
+
+**Multi-Agent Workflow:**
+```
+You: Research quantum computing and create a technical summary
+Agent: [Research agent gathers information]
+Agent: [Technical agent creates summary]
+Agent: Here's your technical summary of quantum computing...
+```
+
+### Improving Workflows
+
+```
+You: Find the latest AI news
+Agent: Here are the latest AI developments...
+
+You: /improve make it focus on LLMs only
+Agent: ✅ Workflow improved! Future searches will prioritize LLM news.
+
+You: /save-workflow LLM News Tracker
+Agent: ✅ Workflow saved!
+```
+
+## 🧠 How It Learns
+
+1. **Pattern Recognition**: Frequently used message patterns become workflows
+2. **User Feedback**: `/improve` commands directly enhance capabilities
+3. **Performance Tracking**: Successful workflows are prioritized
+4. **Agent Evolution**: New specialist agents spawn based on demand
+
+## 🔧 Configuration
+
+### Agent Configuration (storage/configs/)
+```yaml
+name: "Technical Expert"
+model: "gpt-3.5-turbo"
+temperature: 0.3
+system_prompt: |
+  You are a technical expert...
+triggers:
+  - "code"
+  - "debug"
+  - "error"
+```
+
+### System Configuration (config.yaml)
+```yaml
+agents:
+  max_active: 50
+  cleanup_interval: 3600
+  
+learning:
+  pattern_threshold: 3
+  analysis_interval: 21600
+```
+
+## 🛠️ Development
+
+### Adding New Agent Types
+1. Create config in `storage/configs/newtype.yaml`
+2. Add intent classification in `orchestrator._classify_intent()`
+3. That's it! The system handles the rest
+
+### Adding New Tools (MCP)
+1. Create card in `tools/cards/newtool.py`
+2. Register in `tools/registry.py`
+3. Tools are automatically available to all agents
+
+### Creating Workflows
 ```python
-# Agent-specific temperature tuning for optimal performance
-temperatures = {
-    "general": 0.7,     # Creative conversation
-    "technical": 0.3,   # Technical precision  
-    "research": 0.4     # Analytical balance
-}
-
-# Model options
-models = {
-    "development": "gpt-3.5-turbo-0125",  # Cost-effective, fast
-    "production": "gpt-4",                # Higher quality option
-}
+workflow_engine.register_workflow("my_workflow", {
+    "steps": [
+        {"agent_type": "research", "prompt": "Research {topic}"},
+        {"agent_type": "technical", "prompt": "Analyze {research_results}"}
+    ]
+})
 ```
 
-### Intelligent Features
-- **Automatic Domain Classification**: Technical domains, research types, conversation types
-- **User Level Adaptation**: Beginner, intermediate, advanced response tuning
-- **Context Integration**: Conversation history and user preferences
-- **Tool Recommendations**: Smart suggestions for external tool usage
+## 📊 Monitoring
 
-## 📚 Documentation Philosophy
-
-This project follows a **LLM-first documentation approach**:
-
-- Every directory has a `README.llm.md` file explaining its purpose to LLMs
-- Business logic is documented in YAML runbooks that LLMs can understand
-- Code comments assume LLM readers who need context about the intelligent behavior
-- Changes must update documentation to reflect LLM capabilities
-
-### Key Documentation Files
-
-- **`.llm/PROJECT_CONTEXT.md`** - LLM-powered architecture and intelligence principles
-- **`{component}/README.llm.md`** - Component-specific LLM integration documentation
-- **`agents/README.llm.md`** - Detailed LLM agent capabilities and configuration
-
-## 🔧 Development
-
-### Adding New LLM-Powered Functionality
-
-1. **Understand LLM Integration**: Check `.llm/PROJECT_CONTEXT.md` and agent READMEs
-2. **Consider Intelligence Enhancement**: Can this benefit from LLM reasoning?
-3. **Follow LLM Patterns**: Use ChatOpenAI, structured prompts, fallback handling
-4. **Update LLM Documentation**: Modify README.llm.md files with intelligence details
-
-### Creating New LLM-Powered Agents
-
-```bash
-# 1. Create agent directory
-mkdir agents/new_agent
-
-# 2. Create LLM-specific documentation
-echo "# New LLM-Powered Agent Documentation" > agents/new_agent/README.llm.md
-
-# 3. Implement LLM integration
-cat > agents/new_agent/agent.py << 'EOF'
-from langchain_openai import ChatOpenAI
-from langchain_core.prompts import ChatPromptTemplate
-
-class NewAgent:
-    def __init__(self):
-        self.llm = ChatOpenAI(model="gpt-3.5-turbo-0125", temperature=0.4)
-        self.prompt = self._create_specialized_prompt()
-    
-    def _create_specialized_prompt(self):
-        # Domain-specific LLM prompt engineering
-        pass
-EOF
-
-# 4. Update agents/README.llm.md with new LLM capabilities
-```
-
-## 🧪 Testing LLM Integration
-
-```bash
-# Test LLM agent functionality
-pytest tests/agents/          # LLM agent integration tests
-pytest tests/llm_integration/ # LLM API and response tests
-pytest tests/orchestrator/    # Intelligent routing tests
-
-# Test with different OpenAI models
-OPENAI_MODEL=gpt-4 pytest tests/agents/
-OPENAI_MODEL=gpt-3.5-turbo pytest tests/agents/
-
-# Monitor LLM costs during testing
-pytest --cov=agents tests/ --llm-cost-tracking
-```
-
-## 💰 LLM Cost Management
-
-### Cost Optimization Strategies
-- **Smart Token Usage**: Efficient prompt engineering and context management
-- **Model Selection**: Balance between quality (GPT-4) and cost (GPT-3.5-turbo)
-- **Caching**: Avoid redundant LLM calls for similar requests
-- **Fallback Mechanisms**: Keyword-based responses when LLM is unavailable
-
-### Monitoring & Alerts
-- **Real-time Cost Tracking**: Per-agent and per-user LLM usage monitoring
-- **Budget Alerts**: Automatic notifications for cost thresholds
-- **Usage Analytics**: Token efficiency and cost optimization insights
+- **Supabase Dashboard**: View all interactions, patterns, and performance
+- **Event Stream**: Real-time event monitoring
+- **System Status**: `/status` command shows active agents and health
 
 ## 🤝 Contributing
 
-1. **Understand LLM Architecture**: Read `.llm/PROJECT_CONTEXT.md` and agent documentation
-2. **Test LLM Integration**: Ensure new features work with ChatGPT prompts
-3. **Follow LLM Patterns**: Use async LLM calls, structured prompts, error handling
-4. **Update LLM Documentation**: Include intelligence features in README.llm.md files
-5. **Monitor LLM Costs**: Add cost tracking for new LLM functionality
+We love contributions! The codebase is now simple and approachable:
 
-## 🆘 Support
+1. Fork the repository
+2. Create your feature branch
+3. Make your changes (keep it simple!)
+4. Submit a pull request
 
-- **LLM Integration Help**: Check `agents/README.llm.md` for prompt engineering guidance
-- **Testing LLM Features**: Review `tests/agents/` for LLM integration examples
-- **Cost Optimization**: See monitoring dashboards for LLM usage patterns
-- **Agent Capabilities**: All README.llm.md files contain LLM-specific guidance
+## 📝 License
+
+MIT License - see LICENSE file
+
+## 🙏 Acknowledgments
+
+Built with:
+- OpenAI GPT for agent intelligence
+- Supabase for persistence
+- Model Context Protocol (MCP) for tools
+- Slack SDK for communication
 
 ---
 
-**🧠 Built with LLMs at the Core** - This platform leverages OpenAI's ChatGPT to provide intelligent, context-aware assistance across multiple specialized domains. Every component is designed to work seamlessly with large language models while maintaining cost efficiency and reliability. 
+**Remember**: Simplicity is the ultimate sophistication. This platform proves that less code can do more when designed thoughtfully. 

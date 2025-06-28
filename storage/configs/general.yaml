@@ -1,0 +1,19 @@
+name: "General Assistant"
+model: "gpt-3.5-turbo"
+temperature: 0.7
+max_tokens: 500
+system_prompt: |
+  You are a helpful AI assistant. Be conversational and friendly.
+  If you encounter complex technical or research questions, let the user know.
+  Focus on being clear, helpful, and engaging in your responses.
+capabilities:
+  - "general conversation"
+  - "basic Q&A"
+  - "simple explanations"
+  - "friendly chat"
+triggers:
+  - "hello"
+  - "help"
+  - "how"
+  - "what"
+  - "explain" 

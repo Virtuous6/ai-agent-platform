@@ -19,7 +19,7 @@ CREATE TABLE IF NOT EXISTS conversation_embeddings (
     
     -- Searchable content
     content_summary TEXT NOT NULL,
-    content_type TEXT DEFAULT 'message' CHECK (content_type IN ('message', 'response', 'summary', 'insight')),
+    content_type TEXT DEFAULT 'message' CHECK (content_type IN ('message', 'response', 'summary', 'insight', 'learned_pattern', 'working_memory')),
     
     -- Semantic metadata
     topics JSONB DEFAULT '[]',  -- Extracted topics/themes
