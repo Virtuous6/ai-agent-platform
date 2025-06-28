@@ -58,8 +58,8 @@ mypy>=1.5.0
 structlog>=23.1.0
 prometheus-client>=0.17.0
 
-# Model Context Protocol (MCP)
-mcp>=1.0.0
+# Model Context Protocol (MCP) - Official SDK
+mcp[cli]>=1.0.0
 
 # Utilities
 python-dateutil>=2.8.2

@@ -89,12 +89,12 @@ class AIAgentMCPServer:
         except Exception as e:
             logger.error(f"Failed to add custom tool {name}: {e}")
     
-    async def start_server(self, host: str = "localhost", port: int = 8000):
+    def start_server(self, host: str = "localhost", port: int = 8000):
         """Start the MCP server."""
         try:
             logger.info(f"Starting MCP server on {host}:{port}")
-            # FastMCP runs on stdio by default, not host/port
-            await self.mcp.run()
+            # FastMCP manages its own event loop - don't use await
+            self.mcp.run()
         except Exception as e:
             logger.error(f"Failed to start MCP server: {e}")
             raise
@@ -130,10 +130,10 @@ mcp_server = AIAgentMCPServer()
 # Expose FastMCP object for mcp dev tool
 mcp = mcp_server.mcp
 
-async def start_mcp_server():
+def start_mcp_server():
     """Start the MCP server (convenience function)."""
-    await mcp_server.start_server()
+    mcp_server.start_server()
 
 if __name__ == "__main__":
-    # Run server directly
-    asyncio.run(start_mcp_server()) 
+    # Run server directly - FastMCP handles the event loop
+    start_mcp_server() 

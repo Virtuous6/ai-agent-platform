@@ -1,384 +1,333 @@
 #!/usr/bin/env python3
 """
-Universal MCP Tools
+Universal MCP Tools Integration
+==============================
 
-Universal tool availability patterns while maintaining
-platform security and user management features.
-
-Key Features:
-- Universal tools available to all agents
-- Simple registration and usage patterns
-- Maintains user-specific security and permissions
-- Integrates with existing platform features
+This module properly integrates MCP tools with the agent system.
+Makes it easy to register tools and use them from agents.
 """
 
 import asyncio
 import logging
-from typing import Dict, List, Any, Optional, Callable
+from typing import Dict, Any, List, Optional, Callable
 from datetime import datetime
+import json
 
-from mcp.tool_registry import MCPToolRegistry, ToolDescriptor
-from mcp.security_sandbox import MCPSecuritySandbox
-try:
-    from supabase.supabase_logger import SupabaseLogger
-except ImportError:
-    # Fallback if supabase logger doesn't exist
-    class SupabaseLogger:
-        async def log_event(self, *args, **kwargs):
-            pass
-from tools.standard_library import get_standard_tools
+from tools.standard_library import get_standard_tools, execute_tool as execute_standard_tool
+from storage.supabase import SupabaseLogger
 
 logger = logging.getLogger(__name__)
 
-class UniversalMCPTools:
+class UniversalMCPToolRegistry:
     """
-    Universal MCP tool manager with simple interface.
-    
-    Provides:
-    - Universal tools available to all agents
-    - Simple tool registration
-    - Platform integration (security, tracking, user management)
-    - Standard tool library integration
+    Central registry for all tools - both standard library and MCP tools.
+    Stores tool metadata in Supabase for persistence.
     """
     
     def __init__(self, supabase_logger: Optional[SupabaseLogger] = None):
-        """Initialize universal MCP tools."""
-        self.registry = MCPToolRegistry(supabase_logger)
-        self.supabase_logger = supabase_logger
+        """Initialize the universal tool registry."""
+        self.supabase = supabase_logger or SupabaseLogger()
+        self.tools: Dict[str, Dict[str, Any]] = {}
+        self.tool_functions: Dict[str, Callable] = {}
         self._initialized = False
         
-        logger.info("🌐 Universal MCP Tools initializing...")
-    
     async def initialize(self):
-        """Initialize universal tools library."""
+        """Initialize the registry and load tools."""
         if self._initialized:
             return
-        
-        # Load standard tools as universal MCP tools
-        await self._load_standard_tools()
-        
-        # Load universal MCP tools
-        await self._load_universal_mcp_tools()
-        
-        self._initialized = True
-        logger.info("✅ Universal MCP Tools initialized")
+            
+        try:
+            # Load standard library tools first
+            await self._load_standard_tools()
+            
+            # Load tools from Supabase
+            await self._load_supabase_tools()
+            
+            # Try to load MCP tools if available
+            await self._load_mcp_tools()
+            
+            self._initialized = True
+            logger.info(f"✅ Tool registry initialized with {len(self.tools)} tools")
+            
+        except Exception as e:
+            logger.error(f"Failed to initialize tool registry: {e}")
     
     async def _load_standard_tools(self):
-        """Load standard tools as universal tools."""
+        """Load tools from the standard library."""
         try:
             standard_tools = get_standard_tools()
             
-            for tool_config in standard_tools:
-                await self.registry.register_universal_tool(
-                    tool_name=tool_config["name"],
-                    description=tool_config["description"],
-                    mcp_type="standard",
-                    function=tool_config["function"],
-                    parameters=tool_config.get("parameters", {})
-                )
+            for tool in standard_tools:
+                tool_key = f"standard:{tool['name']}"
+                self.tools[tool_key] = {
+                    "name": tool["name"],
+                    "description": tool["description"],
+                    "parameters": tool["parameters"],
+                    "source": "standard_library",
+                    "enabled": True
+                }
+                self.tool_functions[tool_key] = tool["function"]
                 
-            logger.info(f"📦 Loaded {len(standard_tools)} standard tools as universal tools")
+            logger.info(f"Loaded {len(standard_tools)} standard tools")
             
         except Exception as e:
-            logger.error(f"Error loading standard tools: {e}")
+            logger.error(f"Failed to load standard tools: {e}")
     
-    async def _load_universal_mcp_tools(self):
-        """Load universal MCP tools that all agents can access."""
-        universal_tools = [
-            {
-                "name": "web_search",
-                "description": "Search the web for information",
-                "mcp_type": "search",
-                "function": self._universal_web_search,
-                "parameters": {
-                    "query": {"type": "string", "required": True},
-                    "num_results": {"type": "integer", "default": 5}
-                }
-            },
-            {
-                "name": "calculate",
-                "description": "Perform mathematical calculations",
-                "mcp_type": "math", 
-                "function": self._universal_calculate,
-                "parameters": {
-                    "expression": {"type": "string", "required": True}
-                }
-            },
-            {
-                "name": "get_time",
-                "description": "Get current date and time",
-                "mcp_type": "utility",
-                "function": self._universal_get_time,
-                "parameters": {}
-            },
-            {
-                "name": "format_text",
-                "description": "Format and transform text",
-                "mcp_type": "text",
-                "function": self._universal_format_text,
-                "parameters": {
-                    "text": {"type": "string", "required": True},
-                    "format": {"type": "string", "default": "clean"}
-                }
-            }
-        ]
-        
-        for tool_config in universal_tools:
-            await self.registry.register_universal_tool(
-                tool_name=tool_config["name"],
-                description=tool_config["description"],
-                mcp_type=tool_config["mcp_type"],
-                function=tool_config["function"],
-                parameters=tool_config["parameters"]
-            )
-        
-        logger.info(f"🌐 Loaded {len(universal_tools)} universal MCP tools")
-    
-    # ============================================================================
-    # UNIVERSAL TOOL IMPLEMENTATIONS
-    # ============================================================================
-    
-    async def _universal_web_search(self, query: str, num_results: int = 5) -> Dict[str, Any]:
-        """Universal web search tool available to all agents."""
+    async def _load_supabase_tools(self):
+        """Load tools from Supabase 'tools' table."""
         try:
-            # In a real implementation, this would use a real search API
-            # For now, simulate search results
-            results = []
-            for i in range(min(num_results, 10)):
-                results.append({
-                    "title": f"Search result {i+1} for '{query}'",
-                    "url": f"https://example.com/result{i+1}",
-                    "snippet": f"This is a snippet for result {i+1} about {query}",
-                    "rank": i+1
-                })
+            if not self.supabase or not hasattr(self.supabase, 'client'):
+                return
+                
+            # Query tools from Supabase
+            result = self.supabase.client.table("tools")\
+                .select("*")\
+                .eq("is_active", True)\
+                .execute()
             
-            return {
-                "success": True,
-                "query": query,
-                "organic": results,
-                "num_results": len(results)
-            }
-            
+            if result.data:
+                for tool_data in result.data:
+                    tool_type = tool_data.get('tool_type', 'custom')
+                    tool_key = f"{tool_type}:{tool_data['tool_name']}"
+                    
+                    self.tools[tool_key] = {
+                        "name": tool_data["tool_name"],
+                        "description": tool_data["description"],
+                        "parameters": tool_data.get("tool_schema", {}),
+                        "source": tool_type,
+                        "enabled": True,
+                        "category": tool_data.get("category", "general"),
+                        "connection_template": tool_data.get("connection_template", {})
+                    }
+                    
+                logger.info(f"Loaded {len(result.data)} tools from Supabase")
+                
         except Exception as e:
-            return {"success": False, "error": str(e)}
+            logger.warning(f"Failed to load Supabase tools: {e}")
     
-    async def _universal_calculate(self, expression: str) -> Dict[str, Any]:
-        """Universal calculation tool available to all agents."""
+    async def _load_mcp_tools(self):
+        """Load MCP tools if MCP is properly set up."""
         try:
-            # Clean expression
-            expression = expression.strip()
+            # Try to import MCP registry
+            from agent_mcp.registry import MCPRegistry
+            mcp_registry = MCPRegistry()
             
-            # Safety check - only allow safe mathematical operations
-            allowed_chars = set('0123456789+-*/().,e ')
-            if not all(c in allowed_chars for c in expression.replace(' ', '')):
-                return {
-                    "success": False, 
-                    "error": "Invalid characters in expression. Only numbers, +, -, *, /, (), and spaces allowed."
-                }
-            
-            # Check for dangerous patterns
-            dangerous_patterns = ['import', 'exec', 'eval', '__', 'lambda', 'def', 'class']
-            expression_lower = expression.lower()
-            if any(pattern in expression_lower for pattern in dangerous_patterns):
-                return {
-                    "success": False, 
-                    "error": "Expression contains potentially dangerous patterns."
-                }
-            
-            # Safely evaluate the mathematical expression
-            result = eval(expression, {"__builtins__": {}}, {})
-            
-            return {
-                "success": True,
-                "expression": expression,
-                "result": result
-            }
-            
+            # Get user's MCP connections
+            if self.supabase and hasattr(self.supabase, 'client'):
+                connections = self.supabase.client.table("mcp_connections")\
+                    .select("*")\
+                    .eq("status", "active")\
+                    .execute()
+                
+                if connections.data:
+                    for conn in connections.data:
+                        # Load tools from each connection
+                        # This would require actual MCP connection logic
+                        logger.info(f"Found MCP connection: {conn['service_name']}")
+                
+        except ImportError:
+            logger.debug("MCP not available, skipping MCP tool loading")
         except Exception as e:
-            return {"success": False, "error": f"Calculation error: {str(e)}"}
+            logger.warning(f"Failed to load MCP tools: {e}")
     
-    async def _universal_get_time(self) -> Dict[str, Any]:
-        """Universal time tool available to all agents."""
-        try:
-            now = datetime.utcnow()
-            
-            return {
-                "success": True,
-                "utc_time": now.isoformat(),
-                "timestamp": now.timestamp(),
-                "formatted": now.strftime("%Y-%m-%d %H:%M:%S UTC"),
-                "date": now.strftime("%Y-%m-%d"),
-                "time": now.strftime("%H:%M:%S")
-            }
-            
-        except Exception as e:
-            return {"success": False, "error": str(e)}
-    
-    async def _universal_format_text(self, text: str, format: str = "clean") -> Dict[str, Any]:
-        """Universal text formatting tool available to all agents."""
-        try:
-            if format == "clean":
-                # Clean up text
-                result = " ".join(text.split())
-                result = result.strip()
-            elif format == "upper":
-                result = text.upper()
-            elif format == "lower":
-                result = text.lower()
-            elif format == "title":
-                result = text.title()
-            elif format == "reverse":
-                result = text[::-1]
-            else:
-                result = text
-            
-            return {
-                "success": True,
-                "original": text,
-                "formatted": result,
-                "format_applied": format
-            }
-            
-        except Exception as e:
-            return {"success": False, "error": str(e)}
-    
-    # ============================================================================
-    # AGENT INTEGRATION
-    # ============================================================================
-    
-    async def get_tools_for_agent(self, user_id: Optional[str] = None) -> List[Dict[str, Any]]:
+    async def execute_tool(self, tool_name: str, parameters: Dict[str, Any], 
+                          user_id: Optional[str] = None) -> Dict[str, Any]:
         """
-        Get all available tools for an agent (universal + user-specific).
-        
-        This is the main method agents call for tool discovery.
+        Execute a tool by name, regardless of its source.
         
         Args:
-            user_id: User ID for user-specific tools
-            
-        Returns:
-            List of available tools
-        """
-        await self.initialize()
-        return await self.registry.get_available_tools(user_id)
-    
-    async def execute_tool(self, tool_name: str, parameters: Dict[str, Any],
-                         user_id: Optional[str] = None, agent_id: Optional[str] = None) -> Dict[str, Any]:
-        """
-        Execute a tool (universal or user-specific).
-        
-        Simple interface for tool execution.
-        
-        Args:
-            tool_name: Name of tool to execute
+            tool_name: Name of the tool (can be with or without prefix)
             parameters: Tool parameters
-            user_id: User requesting execution
-            agent_id: Agent making the request
+            user_id: Optional user ID for tracking
             
         Returns:
             Tool execution result
         """
-        await self.initialize()
-        
-        # Find tool by name
-        available_tools = await self.get_tools_for_agent(user_id)
-        tool_id = None
-        
-        for tool in available_tools:
-            if tool["tool_name"] == tool_name:
-                tool_id = tool["tool_id"]
-                break
-        
-        if not tool_id:
+        try:
+            # Find the tool (check with and without prefixes)
+            tool_key = None
+            tool_info = None
+            
+            # Direct match
+            if tool_name in self.tools:
+                tool_key = tool_name
+                tool_info = self.tools[tool_name]
+            else:
+                # Search without prefix
+                for key, info in self.tools.items():
+                    if info["name"] == tool_name or key.endswith(f":{tool_name}"):
+                        tool_key = key
+                        tool_info = info
+                        break
+            
+            if not tool_info:
+                return {
+                    "success": False,
+                    "error": f"Tool '{tool_name}' not found",
+                    "available_tools": list(self.get_tool_names())
+                }
+            
+            # Execute based on source
+            source = tool_info["source"]
+            
+            if source == "standard_library":
+                # Use standard library execution
+                if tool_key in self.tool_functions:
+                    # Call function directly with parameters
+                    func = self.tool_functions[tool_key]
+                    result = await asyncio.get_event_loop().run_in_executor(
+                        None, lambda: func(**parameters)
+                    )
+                else:
+                    # Use standard library execute_tool
+                    result = await asyncio.get_event_loop().run_in_executor(
+                        None, lambda: execute_standard_tool(tool_info["name"], **parameters)
+                    )
+                    
+            elif source == "mcp_tool":
+                # Use MCP execution
+                result = await self._execute_mcp_tool(tool_key, tool_info, user_id, **parameters)
+                
+            elif source == "web_search":
+                # Execute web search tool
+                result = await self._execute_web_search(tool_info, **parameters)
+                
+            else:
+                # Execute as generic tool
+                result = await self._execute_generic_tool(tool_info, **parameters)
+            
+            # Log tool usage
+            await self._log_tool_usage(tool_name, parameters, result, user_id)
+            
+            return result
+            
+        except Exception as e:
+            logger.error(f"Tool execution failed for '{tool_name}': {e}")
+            return {"success": False, "error": str(e)}
+    
+    async def _execute_mcp_tool(self, tool_key: str, tool_info: Dict[str, Any], 
+                               user_id: Optional[str], **kwargs) -> Dict[str, Any]:
+        """Execute an MCP tool."""
+        try:
+            # Get user's connection for this tool
+            connection_template = tool_info.get("connection_template", {})
+            
+            # TODO: Implement actual MCP execution
+            # This would require:
+            # 1. Getting user's connection credentials
+            # 2. Establishing MCP connection
+            # 3. Calling the tool through MCP protocol
+            
             return {
                 "success": False,
-                "error": f"Tool '{tool_name}' not found",
-                "available_tools": [t["tool_name"] for t in available_tools]
+                "error": "MCP tool execution not yet implemented",
+                "tool_info": tool_info
             }
-        
-        return await self.registry.execute_tool(tool_id, parameters, user_id, agent_id)
-    
-    async def list_tools(self, user_id: Optional[str] = None) -> List[str]:
-        """
-        List available tool names.
-        
-        Args:
-            user_id: User ID for user-specific tools
             
-        Returns:
-            List of tool names
-        """
-        tools = await self.get_tools_for_agent(user_id)
-        return [tool["tool_name"] for tool in tools]
+        except Exception as e:
+            return {"success": False, "error": f"MCP execution failed: {e}"}
     
-    async def get_tool_info(self, tool_name: str, user_id: Optional[str] = None) -> Optional[Dict[str, Any]]:
-        """
-        Get information about a specific tool.
-        
-        Args:
-            tool_name: Tool name
-            user_id: User ID
+    async def _execute_web_search(self, tool_info: Dict[str, Any], **kwargs) -> Dict[str, Any]:
+        """Execute web search tool."""
+        try:
+            # Import web search if available
+            from agent_mcp.tools.web_search import search_web
             
-        Returns:
-            Tool information or None if not found
-        """
-        tools = await self.get_tools_for_agent(user_id)
-        
-        for tool in tools:
-            if tool["tool_name"] == tool_name:
-                return tool
-        
-        return None
+            query = kwargs.get("query", "")
+            if not query:
+                return {"success": False, "error": "No search query provided"}
+            
+            results = await search_web(query)
+            return {
+                "success": True,
+                "results": results,
+                "source": "web_search"
+            }
+            
+        except ImportError:
+            return {"success": False, "error": "Web search not available"}
+        except Exception as e:
+            return {"success": False, "error": f"Web search failed: {e}"}
     
-    # ============================================================================
-    # USER TOOL MANAGEMENT (maintains existing security model)
-    # ============================================================================
+    async def _execute_generic_tool(self, tool_info: Dict[str, Any], **kwargs) -> Dict[str, Any]:
+        """Execute a generic tool."""
+        return {
+            "success": False,
+            "error": f"Generic tool execution not implemented for {tool_info['name']}"
+        }
     
-    async def register_user_tool(self, user_id: str, tool_name: str, description: str,
-                                mcp_type: str, connection_id: str, function: Callable,
-                                parameters: Dict[str, Any] = None) -> str:
-        """
-        Register a user-specific tool.
+    async def _log_tool_usage(self, tool_name: str, parameters: Dict[str, Any], 
+                             result: Dict[str, Any], user_id: Optional[str]):
+        """Log tool usage to Supabase."""
+        try:
+            if not self.supabase or not hasattr(self.supabase, 'client'):
+                return
+                
+            # Log to tool_usage_analytics table
+            self.supabase.client.table("tool_usage_analytics").insert({
+                "tool_name": tool_name,
+                "user_id": user_id or "system",
+                "execution_time_ms": result.get("execution_time_ms", 0),
+                "success": result.get("success", False),
+                "error_message": result.get("error"),
+                "input_parameters": parameters,
+                "output_data": result,
+                "timestamp": datetime.utcnow().isoformat()
+            }).execute()
+            
+        except Exception as e:
+            logger.debug(f"Failed to log tool usage: {e}")
+    
+    def get_tools_for_agent(self, agent_specialty: str = None) -> List[Dict[str, Any]]:
+        """Get tools suitable for a specific agent specialty."""
+        # For now, return all enabled tools
+        # Later we can filter based on agent specialty
+        return [
+            {
+                "name": info["name"],
+                "description": info["description"],
+                "key": key,
+                "source": info["source"],
+                "category": info.get("category", "general")
+            }
+            for key, info in self.tools.items()
+            if info.get("enabled", True)
+        ]
+    
+    def get_tool_names(self) -> List[str]:
+        """Get list of all tool names."""
+        return [info["name"] for info in self.tools.values()]
+    
+    def search_tools(self, query: str) -> List[Dict[str, Any]]:
+        """Search for tools by name or description."""
+        query_lower = query.lower()
+        matching_tools = []
         
-        Maintains the existing security model while providing simple interface.
-        """
-        await self.initialize()
+        for key, info in self.tools.items():
+            if (query_lower in info["name"].lower() or 
+                query_lower in info["description"].lower()):
+                matching_tools.append({
+                    "key": key,
+                    "name": info["name"],
+                    "description": info["description"],
+                    "source": info["source"],
+                    "category": info.get("category", "general")
+                })
         
-        return await self.registry.register_user_tool(
-            user_id=user_id,
-            tool_name=tool_name,
-            description=description,
-            mcp_type=mcp_type,
-            connection_id=connection_id,
-            function=function,
-            parameters=parameters
-        )
-    
-    async def get_stats(self, user_id: Optional[str] = None) -> Dict[str, Any]:
-        """Get tool usage statistics."""
-        await self.initialize()
-        return await self.registry.get_tool_stats(user_id)
-    
-    async def close(self):
-        """Close and cleanup."""
-        if hasattr(self, 'registry'):
-            await self.registry.close()
+        return matching_tools
 
-# Global instance
-universal_mcp_tools = UniversalMCPTools()
+# Global registry instance
+_global_registry = None
 
-# ============================================================================
-# CONVENIENCE FUNCTIONS
-# ============================================================================
+def get_tool_registry() -> UniversalMCPToolRegistry:
+    """Get the global tool registry instance."""
+    global _global_registry
+    if _global_registry is None:
+        _global_registry = UniversalMCPToolRegistry()
+    return _global_registry
 
-async def get_universal_tools(user_id: Optional[str] = None) -> List[Dict[str, Any]]:
-    """Get universal tools (convenience function)."""
-    return await universal_mcp_tools.get_tools_for_agent(user_id)
-
-async def execute_universal_tool(tool_name: str, parameters: Dict[str, Any],
-                               user_id: Optional[str] = None) -> Dict[str, Any]:
-    """Execute universal tool (convenience function)."""
-    return await universal_mcp_tools.execute_tool(tool_name, parameters, user_id)
-
-async def list_universal_tools(user_id: Optional[str] = None) -> List[str]:
-    """List universal tool names (convenience function)."""
-    return await universal_mcp_tools.list_tools(user_id) 
+async def initialize_tools():
+    """Initialize the global tool registry."""
+    registry = get_tool_registry()
+    await registry.initialize()
+    return registry 

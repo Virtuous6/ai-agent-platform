@@ -194,6 +194,10 @@ class UniversalAgent:
             'pattern_insights': []
         }
         
+        # Tool registry
+        self._tool_registry = None
+        self._tools_initialized = False
+        
         # Performance tracking
         self.conversation_history = []
         self.performance_metrics = {
@@ -422,6 +426,9 @@ Provide improvement analysis for the {self.specialty} specialist:"""
         run_id = str(uuid.uuid4())
         
         try:
+            # Initialize tool registry if not done
+            await self._ensure_tools_initialized()
+            
             # Restore working memory
             await self.restore_working_memory()
             
@@ -467,6 +474,19 @@ Provide improvement analysis for the {self.specialty} specialist:"""
                 "routing": "error"
             }
     
+    async def _ensure_tools_initialized(self):
+        """Ensure tool registry is initialized."""
+        if not self._tools_initialized:
+            try:
+                from core.universal_mcp_tools import get_tool_registry
+                self._tool_registry = get_tool_registry()
+                await self._tool_registry.initialize()
+                self._tools_initialized = True
+                logger.info(f"Tool registry initialized for {self.agent_id}")
+            except Exception as e:
+                logger.error(f"Failed to initialize tool registry: {e}")
+                self._tool_registry = None
+
     async def _find_mcp_tools_for_capability(self, capability: str) -> List[Dict[str, Any]]:
         """
         Find MCP tools that provide a specific capability using the official SDK.
@@ -971,11 +991,97 @@ Provide improvement analysis for the {self.specialty} specialist:"""
         if not needed_tools:
             return {}
         
-        # Step 3: Plan tool execution sequence
+        # Step 3: If we have tool registry, use it directly
+        if self._tool_registry:
+            return await self._execute_tools_via_registry(needed_tools, message, context)
+        
+        # Step 4: Otherwise use old system - Plan tool execution sequence
         tool_plan = self._plan_tool_execution(needed_tools, message)
         
-        # Step 4: Execute with failure recovery and caching
+        # Step 5: Execute with failure recovery and caching
         return await self._execute_tool_plan(tool_plan, message, context)
+
+    async def _execute_tools_via_registry(self, needed_tools: List[str], message: str, context: Dict[str, Any]) -> Dict[str, Any]:
+        """Execute tools using the universal tool registry."""
+        if not self._tool_registry:
+            logger.warning("Tool registry not initialized")
+            return {"error": "Tool registry not available"}
+            
+        results = {}
+        
+        for tool_type in needed_tools:
+            try:
+                # Search for matching tools
+                matching_tools = self._tool_registry.search_tools(tool_type)
+                
+                if not matching_tools:
+                    logger.warning(f"No tools found for {tool_type}")
+                    results[tool_type] = {
+                        "success": False,
+                        "error": f"No tools available for {tool_type}"
+                    }
+                    continue
+                
+                # Use the first matching tool
+                tool_info = matching_tools[0]
+                tool_name = tool_info['name']
+                
+                logger.info(f"Executing {tool_name} for {tool_type}")
+                
+                # Prepare parameters based on tool type
+                params = self._prepare_tool_parameters(tool_type, message, context)
+                
+                # Execute with timeout
+                result = await asyncio.wait_for(
+                    self._tool_registry.execute_tool(
+                        tool_name, 
+                        params,  # Pass as single dict
+                        user_id=context.get('user_id')
+                    ),
+                    timeout=30.0
+                )
+                
+                results[tool_type] = result
+                
+                # Track usage
+                if result.get('success', False):
+                    self._track_successful_pattern(tool_type, message, result, context)
+                    
+            except asyncio.TimeoutError:
+                results[tool_type] = {
+                    "success": False,
+                    "error": "Tool execution timed out"
+                }
+            except Exception as e:
+                logger.error(f"Tool execution failed for {tool_type}: {e}")
+                results[tool_type] = {
+                    "success": False,
+                    "error": str(e)
+                }
+        
+        return results
+    
+    def _prepare_tool_parameters(self, tool_type: str, message: str, context: Dict[str, Any]) -> Dict[str, Any]:
+        """Prepare parameters for tool execution based on tool type."""
+        # Extract parameters from message based on tool type
+        if tool_type == 'search' or tool_type == 'web_search':
+            return {"query": message, "num_results": 5}
+        elif tool_type == 'calculate':
+            # Extract mathematical expression
+            import re
+            math_expr = re.search(r'[\d\s\+\-\*/\(\)\.]+', message)
+            if math_expr:
+                return {"expression": math_expr.group(0).strip()}
+            return {"expression": message}
+        elif tool_type == 'file':
+            # Extract file path if present
+            parts = message.split()
+            if len(parts) > 1:
+                return {"file_path": parts[-1]}
+            return {"file_path": message}
+        else:
+            # Generic parameters
+            return {"input": message, "context": context}
 
     def _should_use_code_generation(self, message: str) -> bool:
         """Determine if message should be handled with code generation."""
